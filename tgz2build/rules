@@ -1,0 +1,44 @@
+#!/usr/local/bin/make -f
+STAMPDIR=tgz2build/stamps
+STAGINGDIR=tgz2build/staging
+CONFIGURE_OPTS := --prefix $(ZBS_PREFIX)
+CONFIGURE_CMD = ./configure
+
+ifneq (,$(findstring $(ZBS_ARCH),amd64))
+CONFIGURE_OPTS+= --enable-frame-pointers
+endif
+all: binary
+
+binary: clean setup configure build install
+
+ifeq (,$(CC))
+CC:=gcc
+endif
+
+setup:  $(STAMPDIR)/stamp-setup
+$(STAMPDIR)/stamp-setup:
+	mkdir -p $(STAMPDIR)
+	touch $@
+
+$(STAMPDIR)/stamp-configure: setup
+configure: $(STAMPDIR)/stamp-configure
+	$(CONFIGURE_CMD) $(CONFIGURE_OPTS)
+	touch $@
+
+build:  $(STAMPDIR)/stamp-build
+$(STAMPDIR)/stamp-build: configure
+	$(MAKE)
+	touch $@
+
+install: $(STAMPDIR)/stamp-install
+$(STAMPDIR)/stamp-install: build
+	rm -rf $(ZBS_STAGE_DIR) || true
+	$(MAKE) install DESTDIR=$(ZBS_STAGE_DIR)
+	touch $@
+
+clean:
+	rm -rf $(STAMPDIR) || true
+	rm -rf $(STAGINGDIR) || true
+	-$(MAKE) clean
+
+.PHONY: build clean binary-indep binary-arch binary install

@@ -1,3 +1,9 @@
+google-perftools (0.98-1ubuntu2) syslogngdeps20; urgency=low
+
+  * released for syslog-ng-deps-2.0.
+
+ -- Tamas Pal <folti@balabit.hu>  Tue, 03 Jul 2012 10:22:15 +0200
+
 google-perftools (0.98-1ubuntu1) jaunty; urgency=low
 
   * debian/patches/01-linux_dirent_ftbfs.patch:
