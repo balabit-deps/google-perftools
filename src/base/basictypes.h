@@ -30,7 +30,11 @@
 #ifndef _BASICTYPES_H_
 #define _BASICTYPES_H_
 
-#include "config.h"
+#include <config.h>
+#include <string.h>       // for memcpy()
+#ifdef HAVE_INTTYPES_H
+#include <inttypes.h>     // gets us PRId64, etc
+#endif
 
 // To use this in an autoconf setting, make sure you run the following
 // autoconf macros:
@@ -80,8 +84,10 @@ const  int16 kint16min  = (   ( int16) 0x8000);
 const  int32 kint32min  = (   ( int32) 0x80000000);
 const  int64 kint64min =  ( ((( int64) kint32min) << 32) | 0 );
 
-// Define the "portable" printf and scanf macros, if they're not already there
-// We just do something that works on many systems, and hope for the best
+// Define the "portable" printf and scanf macros, if they're not
+// already there (via the inttypes.h we #included above, hopefully).
+// Mostly it's old systems that don't support inttypes.h, so we assume
+// they're 32 bit.
 #ifndef PRIx64
 #define PRIx64 "llx"
 #endif
@@ -98,7 +104,16 @@ const  int64 kint64min =  ( ((( int64) kint32min) << 32) | 0 );
 #define PRIu64 "llu"
 #endif
 #ifndef PRIxPTR
-#define PRIxPTR  PRIx64
+#define PRIxPTR "lx"
+#endif
+
+// Also allow for printing of a pthread_t.
+#define GPRIuPTHREAD "lu"
+#define GPRIxPTHREAD "lx"
+#if defined(__CYGWIN__) || defined(__CYGWIN32__) || defined(__APPLE__) || defined(__FreeBSD__)
+#define PRINTABLE_PTHREAD(pthreadt) reinterpret_cast<uintptr_t>(pthreadt)
+#else
+#define PRINTABLE_PTHREAD(pthreadt) pthreadt
 #endif
 
 // A macro to disallow the evil copy constructor and operator= functions
@@ -106,6 +121,9 @@ const  int64 kint64min =  ( ((( int64) kint32min) << 32) | 0 );
 #define DISALLOW_EVIL_CONSTRUCTORS(TypeName)    \
   TypeName(const TypeName&);                    \
   void operator=(const TypeName&)
+
+// An alternate name that leaves out the moral judgment... :-)
+#define DISALLOW_COPY_AND_ASSIGN(TypeName) DISALLOW_EVIL_CONSTRUCTORS(TypeName)
 
 // The COMPILE_ASSERT macro can be used to verify that a compile time
 // expression is true. For example, you could use it to verify the
@@ -176,10 +194,34 @@ struct CompileAssert {
    (reinterpret_cast<char*>(&reinterpret_cast<strct*>(16)->field) -     \
     reinterpret_cast<char*>(16))
 
+// bit_cast<Dest,Source> implements the equivalent of
+// "*reinterpret_cast<Dest*>(&source)".
+//
+// The reinterpret_cast method would produce undefined behavior
+// according to ISO C++ specification section 3.10 -15 -.
+// bit_cast<> calls memcpy() which is blessed by the standard,
+// especially by the example in section 3.9.
+//
+// Fortunately memcpy() is very fast.  In optimized mode, with a
+// constant size, gcc 2.95.3, gcc 4.0.1, and msvc 7.1 produce inline
+// code with the minimal amount of data movement.  On a 32-bit system,
+// memcpy(d,s,4) compiles to one load and one store, and memcpy(d,s,8)
+// compiles to two loads and two stores.
+
+template <class Dest, class Source>
+inline Dest bit_cast(const Source& source) {
+  COMPILE_ASSERT(sizeof(Dest) == sizeof(Source), bitcasting_unequal_sizes);
+  Dest dest;
+  memcpy(&dest, &source, sizeof(dest));
+  return dest;
+}
+
 #ifdef HAVE___ATTRIBUTE__
-# define ATTRIBUTE_WEAK  __attribute__((weak))
+# define ATTRIBUTE_WEAK      __attribute__((weak))
+# define ATTRIBUTE_NOINLINE  __attribute__((noinline))
 #else
 # define ATTRIBUTE_WEAK
+# define ATTRIBUTE_NOINLINE
 #endif
 
 // Section attributes are supported for both ELF and Mach-O, but in
@@ -221,7 +263,7 @@ struct CompileAssert {
 # define HAVE_ATTRIBUTE_SECTION_START 1
 
 #elif defined(HAVE___ATTRIBUTE__) && defined(__MACH__)
-# define ATTRIBUTE_SECTION(name) __attribute__ ((section ("__DATA, " #name)))
+# define ATTRIBUTE_SECTION(name) __attribute__ ((section ("__TEXT, " #name)))
 
 #include <mach-o/getsect.h>
 #include <mach-o/dyld.h>
@@ -232,18 +274,32 @@ class AssignAttributeStartEnd {
     if (_dyld_present()) {
       for (int i = _dyld_image_count() - 1; i >= 0; --i) {
         const mach_header* hdr = _dyld_get_image_header(i);
-        uint32_t len;
-        *pstart = getsectdatafromheader(hdr, "__DATA", name, &len);
-        if (*pstart) {   // NULL if not defined in this dynamic library
-          *pstart += _dyld_get_image_vmaddr_slide(i);   // correct for reloc
-          *pend = *pstart + len;
-          return;
+#ifdef MH_MAGIC_64
+        if (hdr->magic == MH_MAGIC_64) {
+          uint64_t len;
+          *pstart = getsectdatafromheader_64((mach_header_64*)hdr,
+                                             "__TEXT", name, &len);
+          if (*pstart) {   // NULL if not defined in this dynamic library
+            *pstart += _dyld_get_image_vmaddr_slide(i);   // correct for reloc
+            *pend = *pstart + len;
+            return;
+          }
+        }
+#endif
+        if (hdr->magic == MH_MAGIC) {
+          uint32_t len;
+          *pstart = getsectdatafromheader(hdr, "__TEXT", name, &len);
+          if (*pstart) {   // NULL if not defined in this dynamic library
+            *pstart += _dyld_get_image_vmaddr_slide(i);   // correct for reloc
+            *pend = *pstart + len;
+            return;
+          }
         }
       }
     }
     // If we get here, not defined in a dll at all.  See if defined statically.
     unsigned long len;    // don't ask me why this type isn't uint32_t too...
-    *pstart = getsectdata("__DATA", name, &len);
+    *pstart = getsectdata("__TEXT", name, &len);
     *pend = *pstart + len;
   }
 };
@@ -274,6 +330,13 @@ class AssignAttributeStartEnd {
 # define ATTRIBUTE_SECTION_STOP(name) (reinterpret_cast<void*>(0))
 
 #endif  // HAVE___ATTRIBUTE__ and __ELF__ or __MACH__
+
+#if defined(HAVE___ATTRIBUTE__) && (defined(__i386__) || defined(__x86_64__))
+# define CACHELINE_ALIGNED __attribute__((aligned(64)))
+#else
+# define CACHELINE_ALIGNED
+#endif  // defined(HAVE___ATTRIBUTE__) && (__i386__ || __x86_64__)
+
 
 // The following enum should be used only as a constructor argument to indicate
 // that the variable has static storage class, and that the constructor should

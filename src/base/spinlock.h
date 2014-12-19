@@ -37,29 +37,21 @@
 // of a compare-and-swap which is expensive).
 
 // SpinLock is async signal safe.
-// If used within a signal handler, all lock holders 
+// If used within a signal handler, all lock holders
 // should block the signal even outside the signal handler.
 
 #ifndef BASE_SPINLOCK_H_
 #define BASE_SPINLOCK_H_
 
-#include "config.h"
-#include "base/basictypes.h"
+#include <config.h>
 #include "base/atomicops.h"
+#include "base/basictypes.h"
 #include "base/dynamic_annotations.h"
-
-// One day, we may use __attribute__ stuff on gcc to annotate these functions
-#define LOCKABLE
-#define SCOPED_LOCKABLE
-#define EXCLUSIVE_LOCK_FUNCTION(...)
-#define EXCLUSIVE_TRYLOCK_FUNCTION(...)
-#define UNLOCK_FUNCTION(...)
-
-
+#include "base/thread_annotations.h"
 
 class LOCKABLE SpinLock {
  public:
-  SpinLock() : lockword_(0) { }
+  SpinLock() : lockword_(kSpinLockFree) { }
 
   // Special constructor for use with static SpinLock objects.  E.g.,
   //
@@ -70,24 +62,29 @@ class LOCKABLE SpinLock {
   // A SpinLock constructed like this can be freely used from global
   // initializers without worrying about the order in which global
   // initializers run.
-  explicit SpinLock(base::LinkerInitialized x) {
+  explicit SpinLock(base::LinkerInitialized /*x*/) {
     // Does nothing; lockword_ is already initialized
   }
 
   // Acquire this SpinLock.
-  inline void Lock() EXCLUSIVE_LOCK_FUNCTION() {
-    if (Acquire_CompareAndSwap(&lockword_, 0, 1) != 0) {
+  // TODO(csilvers): uncomment the annotation when we figure out how to
+  //                 support this macro with 0 args (see thread_annotations.h)
+  inline void Lock() /*EXCLUSIVE_LOCK_FUNCTION()*/ {
+    if (base::subtle::Acquire_CompareAndSwap(&lockword_, kSpinLockFree,
+                                             kSpinLockHeld) != kSpinLockFree) {
       SlowLock();
     }
     ANNOTATE_RWLOCK_ACQUIRED(this, 1);
   }
 
-  // Acquire this SpinLock and return true if the acquisition can be
-  // done without blocking, else return false.  If this SpinLock is
-  // free at the time of the call, TryLock will return true with high
-  // probability.
+  // Try to acquire this SpinLock without blocking and return true if the
+  // acquisition was successful.  If the lock was not acquired, false is
+  // returned.  If this SpinLock is free at the time of the call, TryLock
+  // will return true with high probability.
   inline bool TryLock() EXCLUSIVE_TRYLOCK_FUNCTION(true) {
-    bool res = (Acquire_CompareAndSwap(&lockword_, 0, 1) == 0);
+    bool res =
+        (base::subtle::Acquire_CompareAndSwap(&lockword_, kSpinLockFree,
+                                              kSpinLockHeld) == kSpinLockFree);
     if (res) {
       ANNOTATE_RWLOCK_ACQUIRED(this, 1);
     }
@@ -95,51 +92,42 @@ class LOCKABLE SpinLock {
   }
 
   // Release this SpinLock, which must be held by the calling thread.
-  inline void Unlock() UNLOCK_FUNCTION() {
-    // This is defined in mutex.cc.
-    extern void SubmitSpinLockProfileData(const void *, int64);
-
-    int64 wait_timestamp = static_cast<uint32>(lockword_);
+  // TODO(csilvers): uncomment the annotation when we figure out how to
+  //                 support this macro with 0 args (see thread_annotations.h)
+  inline void Unlock() /*UNLOCK_FUNCTION()*/ {
+    uint64 wait_cycles =
+        static_cast<uint64>(base::subtle::NoBarrier_Load(&lockword_));
     ANNOTATE_RWLOCK_RELEASED(this, 1);
-    Release_Store(&lockword_, 0);
-    // Collect contention profile info if this lock was contended.
-    // The lockword_ value indicates when the waiter started waiting
-    if (wait_timestamp != 1) {
-      // Subtract one from wait_timestamp as antidote to "now |= 1;"
-      // in SlowLock().
-      SubmitSpinLockProfileData(this, wait_timestamp - 1);
+    base::subtle::Release_Store(&lockword_, kSpinLockFree);
+    if (wait_cycles != kSpinLockHeld) {
+      // Collect contentionz profile info, and speed the wakeup of any waiter.
+      // The wait_cycles value indicates how long this thread spent waiting
+      // for the lock.
+      SlowUnlock(wait_cycles);
     }
   }
 
-  // Report if we think the lock can be held by this thread.
-  // When the lock is truly held by the invoking thread
-  // we will always return true.
-  // Indended to be used as CHECK(lock.IsHeld());
+  // Determine if the lock is held.  When the lock is held by the invoking
+  // thread, true will always be returned. Intended to be used as
+  // CHECK(lock.IsHeld()).
   inline bool IsHeld() const {
-    return lockword_ != 0;
+    return base::subtle::NoBarrier_Load(&lockword_) != kSpinLockFree;
   }
-
-  // The timestamp for contention lock profiling must fit into 31 bits.
-  // as lockword_ is 32 bits and we loose an additional low-order bit due
-  // to the statement "now |= 1" in SlowLock().
-  // To select 31 bits from the 64-bit cycle counter, we shift right by
-  // PROFILE_TIMESTAMP_SHIFT = 7.
-  // Using these 31 bits, we reduce granularity of time measurement to
-  // 256 cycles, and will loose track of wait time for waits greater than
-  // 109 seconds on a 5 GHz machine, longer for faster clock cycles.
-  // Waits this long should be very rare.
-  enum { PROFILE_TIMESTAMP_SHIFT = 7 };
 
   static const base::LinkerInitialized LINKER_INITIALIZED;  // backwards compat
  private:
-  // Lock-state:  0 means unlocked; 1 means locked with no waiters; values
-  // greater than 1 indicate locked with waiters, where the value is the time
-  // the first waiter started waiting and is used for contention profiling.
-  volatile AtomicWord lockword_;
+  enum { kSpinLockFree = 0 };
+  enum { kSpinLockHeld = 1 };
+  enum { kSpinLockSleeper = 2 };
+
+  volatile Atomic32 lockword_;
 
   void SlowLock();
+  void SlowUnlock(uint64 wait_cycles);
+  Atomic32 SpinLoop(int64 initial_wait_timestamp, Atomic32* wait_cycles);
+  inline int32 CalculateWaitCycles(int64 wait_start_time);
 
-  DISALLOW_EVIL_CONSTRUCTORS(SpinLock);
+  DISALLOW_COPY_AND_ASSIGN(SpinLock);
 };
 
 // Corresponding locker object that arranges to acquire a spinlock for
@@ -152,7 +140,9 @@ class SCOPED_LOCKABLE SpinLockHolder {
       : lock_(l) {
     l->Lock();
   }
-  inline ~SpinLockHolder() UNLOCK_FUNCTION() { lock_->Unlock(); }
+  // TODO(csilvers): uncomment the annotation when we figure out how to
+  //                 support this macro with 0 args (see thread_annotations.h)
+  inline ~SpinLockHolder() /*UNLOCK_FUNCTION()*/ { lock_->Unlock(); }
 };
 // Catch bug where variable name is omitted, e.g. SpinLockHolder (&lock);
 #define SpinLockHolder(x) COMPILE_ASSERT(0, spin_lock_decl_missing_var_name)

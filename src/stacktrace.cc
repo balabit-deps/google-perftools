@@ -52,44 +52,59 @@
 // correctly when GetStackTrace() is called with max_depth == 0.
 // Some code may do that.
 
-#include "config.h"
+#include <config.h>
+#include <gperftools/stacktrace.h>
+#include "stacktrace_config.h"
 
-// First, the i386 case.
-#if defined(__i386__) && __GNUC__ >= 2
-# if !defined(NO_FRAME_POINTER)
-#   include "stacktrace_x86-inl.h"
-# else
-#   include "stacktrace_generic-inl.h"
-# endif
+#if defined(STACKTRACE_INL_HEADER)
 
-// Now, the x86_64 case.
-#elif defined(__x86_64__) && __GNUC__ >= 2
-# if !defined(NO_FRAME_POINTER)
-#   include "stacktrace_x86-inl.h"
-# elif defined(HAVE_LIBUNWIND_H)  // a proxy for having libunwind installed
-#   define UNW_LOCAL_ONLY
-#   include "stacktrace_libunwind-inl.h"
-# elif 0
-    // This is the unwinder used by gdb, which can call malloc (see above).
-    // We keep this code around, so we can test cases where libunwind
-    // doesn't work, but there's no way to enable it except for manually
-    // editing this file (by replacing this "elif 0" with "elif 1", e.g.).
-#   include "stacktrace_x86_64-inl.h"
-# elif defined(__linux)
-#   error Cannnot calculate stack trace: need either libunwind or frame-pointers (see INSTALL file)
-# else
-#   error Cannnot calculate stack trace: need libunwind (see INSTALL file)
-# endif
+#define IS_STACK_FRAMES 0
+#define IS_WITH_CONTEXT 0
+#define GET_STACK_TRACE_OR_FRAMES \
+   GetStackTrace(void **result, int max_depth, int skip_count)
+#include STACKTRACE_INL_HEADER
+#undef IS_STACK_FRAMES
+#undef IS_WITH_CONTEXT
+#undef GET_STACK_TRACE_OR_FRAMES
 
-// The PowerPC case
-#elif (defined(__ppc__) || defined(__PPC__)) && __GNUC__ >= 2
-# if !defined(NO_FRAME_POINTER)
-#   include "stacktrace_powerpc-inl.h"
-# else
-#   include "stacktrace_generic-inl.h"
-# endif
+#define IS_STACK_FRAMES 1
+#define IS_WITH_CONTEXT 0
+#define GET_STACK_TRACE_OR_FRAMES \
+  GetStackFrames(void **result, int *sizes, int max_depth, int skip_count)
+#include STACKTRACE_INL_HEADER
+#undef IS_STACK_FRAMES
+#undef IS_WITH_CONTEXT
+#undef GET_STACK_TRACE_OR_FRAMES
 
-// OK, those are all the processors we know how to deal with.
+#define IS_STACK_FRAMES 0
+#define IS_WITH_CONTEXT 1
+#define GET_STACK_TRACE_OR_FRAMES \
+  GetStackTraceWithContext(void **result, int max_depth, \
+                           int skip_count, const void *ucp)
+#include STACKTRACE_INL_HEADER
+#undef IS_STACK_FRAMES
+#undef IS_WITH_CONTEXT
+#undef GET_STACK_TRACE_OR_FRAMES
+
+#define IS_STACK_FRAMES 1
+#define IS_WITH_CONTEXT 1
+#define GET_STACK_TRACE_OR_FRAMES \
+  GetStackFramesWithContext(void **result, int *sizes, int max_depth, \
+                            int skip_count, const void *ucp)
+#include STACKTRACE_INL_HEADER
+#undef IS_STACK_FRAMES
+#undef IS_WITH_CONTEXT
+#undef GET_STACK_TRACE_OR_FRAMES
+
+#elif 0
+// This is for the benefit of code analysis tools that may have
+// trouble with the computed #include above.
+# include "stacktrace_x86-inl.h"
+# include "stacktrace_libunwind-inl.h"
+# include "stacktrace_generic-inl.h"
+# include "stacktrace_powerpc-inl.h"
+# include "stacktrace_win32-inl.h"
+# include "stacktrace_arm-inl.h"
 #else
 # error Cannot calculate stack trace: will need to write for your environment
 #endif

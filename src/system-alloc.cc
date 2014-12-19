@@ -30,32 +30,42 @@
 // ---
 // Author: Sanjay Ghemawat
 
-#include "config.h"
+#include <config.h>
+#include <errno.h>                      // for EAGAIN, errno
+#include <fcntl.h>                      // for open, O_RDWR
+#include <stddef.h>                     // for size_t, NULL, ptrdiff_t
 #if defined HAVE_STDINT_H
-#include <stdint.h>
+#include <stdint.h>                     // for uintptr_t, intptr_t
 #elif defined HAVE_INTTYPES_H
 #include <inttypes.h>
 #else
 #include <sys/types.h>
 #endif
-#ifdef HAVE_UNISTD_H
-#include <unistd.h>
-#endif
-#include <fcntl.h>    // for open()
 #ifdef HAVE_MMAP
-#include <sys/mman.h>
+#include <sys/mman.h>                   // for munmap, mmap, MADV_DONTNEED, etc
 #endif
-#include <errno.h>
-#include "system-alloc.h"
-#include "internal_logging.h"
-#include "base/logging.h"
+#ifdef HAVE_UNISTD_H
+#include <unistd.h>                     // for sbrk, getpagesize, off_t
+#endif
+#include <new>                          // for operator new
+#include <gperftools/malloc_extension.h>
+#include "base/basictypes.h"
 #include "base/commandlineflags.h"
-#include "base/spinlock.h"
+#include "base/spinlock.h"              // for SpinLockHolder, SpinLock, etc
+#include "common.h"
+#include "internal_logging.h"
 
 // On systems (like freebsd) that don't define MAP_ANONYMOUS, use the old
 // form of the name instead.
 #ifndef MAP_ANONYMOUS
 # define MAP_ANONYMOUS MAP_ANON
+#endif
+
+// MADV_FREE is specifically designed for use by malloc(), but only
+// FreeBSD supports it; in linux we fall back to the somewhat inferior
+// MADV_DONTNEED.
+#if !defined(MADV_FREE) && defined(MADV_DONTNEED)
+# define MADV_FREE  MADV_DONTNEED
 #endif
 
 // Solaris has a bug where it doesn't declare madvise() for C++.
@@ -73,29 +83,59 @@ static const bool kDebugMode = false;
 static const bool kDebugMode = true;
 #endif
 
+// TODO(sanjay): Move the code below into the tcmalloc namespace
+using tcmalloc::kLog;
+using tcmalloc::Log;
+
+// Anonymous namespace to avoid name conflicts on "CheckAddressBits".
+namespace {
+
+// Check that no bit is set at position ADDRESS_BITS or higher.
+template <int ADDRESS_BITS> bool CheckAddressBits(uintptr_t ptr) {
+  return (ptr >> ADDRESS_BITS) == 0;
+}
+
+// Specialize for the bit width of a pointer to avoid undefined shift.
+template <> bool CheckAddressBits<8 * sizeof(void*)>(uintptr_t ptr) {
+  return true;
+}
+
+}  // Anonymous namespace to avoid name conflicts on "CheckAddressBits".
+
+COMPILE_ASSERT(kAddressBits <= 8 * sizeof(void*),
+               address_bits_larger_than_pointer_size);
+
 // Structure for discovering alignment
 union MemoryAligner {
   void*  p;
   double d;
   size_t s;
-};
+} CACHELINE_ALIGNED;
 
 static SpinLock spinlock(SpinLock::LINKER_INITIALIZED);
 
-#if defined(HAVE_MMAP) || defined(MADV_DONTNEED)
+#if defined(HAVE_MMAP) || defined(MADV_FREE)
 // Page size is initialized on demand (only needed for mmap-based allocators)
 static size_t pagesize = 0;
 #endif
 
-// Configuration parameters.
+// The current system allocator
+SysAllocator* sys_alloc = NULL;
 
-DEFINE_int32(malloc_devmem_start, 0,
+// Configuration parameters.
+DEFINE_int32(malloc_devmem_start,
+             EnvToInt("TCMALLOC_DEVMEM_START", 0),
              "Physical memory starting location in MB for /dev/mem allocation."
              "  Setting this to 0 disables /dev/mem allocation");
-DEFINE_int32(malloc_devmem_limit, 0,
+DEFINE_int32(malloc_devmem_limit,
+             EnvToInt("TCMALLOC_DEVMEM_LIMIT", 0),
              "Physical memory limit location in MB for /dev/mem allocation."
              "  Setting this to 0 means no limit.");
-DEFINE_bool(malloc_skip_mmap, false,
+DEFINE_bool(malloc_skip_sbrk,
+            EnvToBool("TCMALLOC_SKIP_SBRK", false),
+            "Whether sbrk can be used to obtain memory.");
+DEFINE_bool(malloc_skip_mmap,
+            EnvToBool("TCMALLOC_SKIP_MMAP", false),
             "Whether mmap can be used to obtain memory.");
 
 // static allocators
@@ -104,7 +144,6 @@ public:
   SbrkSysAllocator() : SysAllocator() {
   }
   void* Alloc(size_t size, size_t *actual_size, size_t alignment);
-  void DumpStats(TCMalloc_Printer* printer);
 };
 static char sbrk_space[sizeof(SbrkSysAllocator)];
 
@@ -113,7 +152,6 @@ public:
   MmapSysAllocator() : SysAllocator() {
   }
   void* Alloc(size_t size, size_t *actual_size, size_t alignment);
-  void DumpStats(TCMalloc_Printer* printer);
 };
 static char mmap_space[sizeof(MmapSysAllocator)];
 
@@ -122,41 +160,67 @@ public:
   DevMemSysAllocator() : SysAllocator() {
   }
   void* Alloc(size_t size, size_t *actual_size, size_t alignment);
-  void DumpStats(TCMalloc_Printer* printer);
 };
-static char devmem_space[sizeof(DevMemSysAllocator)];
 
-static const int kStaticAllocators = 3;
-// kMaxDynamicAllocators + kStaticAllocators;
-static const int kMaxAllocators = 5;
-SysAllocator *allocators[kMaxAllocators];
+class DefaultSysAllocator : public SysAllocator {
+ public:
+  DefaultSysAllocator() : SysAllocator() {
+    for (int i = 0; i < kMaxAllocators; i++) {
+      failed_[i] = true;
+      allocs_[i] = NULL;
+      names_[i] = NULL;
+    }
+  }
+  void SetChildAllocator(SysAllocator* alloc, unsigned int index,
+                         const char* name) {
+    if (index < kMaxAllocators && alloc != NULL) {
+      allocs_[index] = alloc;
+      failed_[index] = false;
+      names_[index] = name;
+    }
+  }
+  void* Alloc(size_t size, size_t *actual_size, size_t alignment);
 
-bool RegisterSystemAllocator(SysAllocator *a, int priority) {
-  SpinLockHolder lock_holder(&spinlock);
-
-  // No two allocators should have a priority conflict, since the order
-  // is determined at compile time.
-  CHECK_CONDITION(allocators[priority] == NULL);
-  allocators[priority] = a;
-  return true;
-}
+ private:
+  static const int kMaxAllocators = 2;
+  bool failed_[kMaxAllocators];
+  SysAllocator* allocs_[kMaxAllocators];
+  const char* names_[kMaxAllocators];
+};
+static char default_space[sizeof(DefaultSysAllocator)];
+static const char sbrk_name[] = "SbrkSysAllocator";
+static const char mmap_name[] = "MmapSysAllocator";
 
 
 void* SbrkSysAllocator::Alloc(size_t size, size_t *actual_size,
                               size_t alignment) {
+#ifndef HAVE_SBRK
+  failed_ = true;
+  return NULL;
+#else
+  // Check if we should use sbrk allocation.
+  // FLAGS_malloc_skip_sbrk starts out as false (its uninitialized
+  // state) and eventually gets initialized to the specified value.  Note
+  // that this code runs for a while before the flags are initialized.
+  // That means that even if this flag is set to true, some (initial)
+  // memory will be allocated with sbrk before the flag takes effect.
+  if (FLAGS_malloc_skip_sbrk) {
+    return NULL;
+  }
+
   // sbrk will release memory if passed a negative number, so we do
   // a strict check here
   if (static_cast<ptrdiff_t>(size + alignment) < 0) return NULL;
 
-  // could theoretically return the "extra" bytes here, but this
-  // is simple and correct.
-  if (actual_size) {
-    *actual_size = size;
-  }
-
   // This doesn't overflow because TCMalloc_SystemAlloc has already
   // tested for overflow at the alignment boundary.
   size = ((size + alignment - 1) / alignment) * alignment;
+
+  // "actual_size" indicates that the bytes from the returned pointer
+  // p up to and including (p + actual_size - 1) have been allocated.
+  if (actual_size) {
+    *actual_size = size;
+  }
 
   // Check that we we're not asking for so much more memory that we'd
   // wrap around the end of the virtual address space.  (This seems
@@ -166,13 +230,11 @@ void* SbrkSysAllocator::Alloc(size_t size, size_t *actual_size,
   //    http://sourceware.org/cgi-bin/cvsweb.cgi/~checkout~/libc/misc/sbrk.c?rev=1.1.2.1&content-type=text/plain&cvsroot=glibc
   // Without this check, sbrk may succeed when it ought to fail.)
   if (reinterpret_cast<intptr_t>(sbrk(0)) + size < size) {
-    failed_ = true;
     return NULL;
   }
 
   void* result = sbrk(size);
   if (result == reinterpret_cast<void*>(-1)) {
-    failed_ = true;
     return NULL;
   }
 
@@ -192,7 +254,6 @@ void* SbrkSysAllocator::Alloc(size_t size, size_t *actual_size,
   // that we can find an aligned region within it.
   result = sbrk(size + alignment - 1);
   if (result == reinterpret_cast<void*>(-1)) {
-    failed_ = true;
     return NULL;
   }
   ptr = reinterpret_cast<uintptr_t>(result);
@@ -200,10 +261,7 @@ void* SbrkSysAllocator::Alloc(size_t size, size_t *actual_size,
     ptr += alignment - (ptr & (alignment-1));
   }
   return reinterpret_cast<void*>(ptr);
-}
-
-void SbrkSysAllocator::DumpStats(TCMalloc_Printer* printer) {
-  printer->printf("SbrkSysAllocator: failed_=%d\n", failed_);
+#endif  // HAVE_SBRK
 }
 
 void* MmapSysAllocator::Alloc(size_t size, size_t *actual_size,
@@ -222,12 +280,6 @@ void* MmapSysAllocator::Alloc(size_t size, size_t *actual_size,
     return NULL;
   }
 
-  // could theoretically return the "extra" bytes here, but this
-  // is simple and correct.
-  if (actual_size) {
-    *actual_size = size;
-  }
-
   // Enforce page alignment
   if (pagesize == 0) pagesize = getpagesize();
   if (alignment < pagesize) alignment = pagesize;
@@ -236,6 +288,12 @@ void* MmapSysAllocator::Alloc(size_t size, size_t *actual_size,
     return NULL;
   }
   size = aligned_size;
+
+  // "actual_size" indicates that the bytes from the returned pointer
+  // p up to and including (p + actual_size - 1) have been allocated.
+  if (actual_size) {
+    *actual_size = size;
+  }
 
   // Ask for extra memory if alignment > pagesize
   size_t extra = 0;
@@ -252,7 +310,6 @@ void* MmapSysAllocator::Alloc(size_t size, size_t *actual_size,
                       MAP_PRIVATE|MAP_ANONYMOUS,
                       -1, 0);
   if (result == reinterpret_cast<void*>(MAP_FAILED)) {
-    failed_ = true;
     return NULL;
   }
 
@@ -274,10 +331,6 @@ void* MmapSysAllocator::Alloc(size_t size, size_t *actual_size,
   ptr += adjust;
   return reinterpret_cast<void*>(ptr);
 #endif  // HAVE_MMAP
-}
-
-void MmapSysAllocator::DumpStats(TCMalloc_Printer* printer) {
-  printer->printf("MmapSysAllocator: failed_=%d\n", failed_);
 }
 
 void* DevMemSysAllocator::Alloc(size_t size, size_t *actual_size,
@@ -304,18 +357,11 @@ void* DevMemSysAllocator::Alloc(size_t size, size_t *actual_size,
   if (!initialized) {
     physmem_fd = open("/dev/mem", O_RDWR);
     if (physmem_fd < 0) {
-      failed_ = true;
       return NULL;
     }
     physmem_base = FLAGS_malloc_devmem_start*1024LL*1024LL;
     physmem_limit = FLAGS_malloc_devmem_limit*1024LL*1024LL;
     initialized = true;
-  }
-
-  // could theoretically return the "extra" bytes here, but this
-  // is simple and correct.
-  if (actual_size) {
-    *actual_size = size;
   }
 
   // Enforce page alignment
@@ -327,6 +373,12 @@ void* DevMemSysAllocator::Alloc(size_t size, size_t *actual_size,
   }
   size = aligned_size;
 
+  // "actual_size" indicates that the bytes from the returned pointer
+  // p up to and including (p + actual_size - 1) have been allocated.
+  if (actual_size) {
+    *actual_size = size;
+  }
+
   // Ask for extra memory if alignment > pagesize
   size_t extra = 0;
   if (alignment > pagesize) {
@@ -336,7 +388,6 @@ void* DevMemSysAllocator::Alloc(size_t size, size_t *actual_size,
   // check to see if we have any memory left
   if (physmem_limit != 0 &&
       ((size + extra) > (physmem_limit - physmem_base))) {
-    failed_ = true;
     return NULL;
   }
 
@@ -347,7 +398,6 @@ void* DevMemSysAllocator::Alloc(size_t size, size_t *actual_size,
   void *result = mmap(0, size + extra, PROT_WRITE|PROT_READ,
                       MAP_SHARED, physmem_fd, physmem_base);
   if (result == reinterpret_cast<void*>(MAP_FAILED)) {
-    failed_ = true;
     return NULL;
   }
   uintptr_t ptr = reinterpret_cast<uintptr_t>(result);
@@ -373,15 +423,29 @@ void* DevMemSysAllocator::Alloc(size_t size, size_t *actual_size,
 #endif  // HAVE_MMAP
 }
 
-void DevMemSysAllocator::DumpStats(TCMalloc_Printer* printer) {
-  printer->printf("DevMemSysAllocator: failed_=%d\n", failed_);
+void* DefaultSysAllocator::Alloc(size_t size, size_t *actual_size,
+                                 size_t alignment) {
+  for (int i = 0; i < kMaxAllocators; i++) {
+    if (!failed_[i] && allocs_[i] != NULL) {
+      void* result = allocs_[i]->Alloc(size, actual_size, alignment);
+      if (result != NULL) {
+        return result;
+      }
+      failed_[i] = true;
+    }
+  }
+  // After both failed, reset "failed_" to false so that a single failed
+  // allocation won't make the allocator never work again.
+  for (int i = 0; i < kMaxAllocators; i++) {
+    failed_[i] = false;
+  }
+  return NULL;
 }
 
 static bool system_alloc_inited = false;
 void InitSystemAllocators(void) {
-  // This determines the order in which system allocators are called
-  int i = kMaxDynamicAllocators;
-  allocators[i++] = new (devmem_space) DevMemSysAllocator();
+  MmapSysAllocator *mmap = new (mmap_space) MmapSysAllocator();
+  SbrkSysAllocator *sbrk = new (sbrk_space) SbrkSysAllocator();
 
   // In 64-bit debug mode, place the mmap allocator first since it
   // allocates pointers that do not fit in 32 bits and therefore gives
@@ -390,13 +454,15 @@ void InitSystemAllocators(void) {
   // likely to look like pointers and therefore the conservative gc in
   // the heap-checker is less likely to misinterpret a number as a
   // pointer).
+  DefaultSysAllocator *sdef = new (default_space) DefaultSysAllocator();
   if (kDebugMode && sizeof(void*) > 4) {
-    allocators[i++] = new (mmap_space) MmapSysAllocator();
-    allocators[i++] = new (sbrk_space) SbrkSysAllocator();
+    sdef->SetChildAllocator(mmap, 0, mmap_name);
+    sdef->SetChildAllocator(sbrk, 1, sbrk_name);
   } else {
-    allocators[i++] = new (sbrk_space) SbrkSysAllocator();
-    allocators[i++] = new (mmap_space) MmapSysAllocator();
+    sdef->SetChildAllocator(sbrk, 0, sbrk_name);
+    sdef->SetChildAllocator(mmap, 1, mmap_name);
   }
+  sys_alloc = sdef;
 }
 
 void* TCMalloc_SystemAlloc(size_t size, size_t *actual_size,
@@ -414,33 +480,24 @@ void* TCMalloc_SystemAlloc(size_t size, size_t *actual_size,
   // Enforce minimum alignment
   if (alignment < sizeof(MemoryAligner)) alignment = sizeof(MemoryAligner);
 
-  // Try twice, once avoiding allocators that failed before, and once
-  // more trying all allocators even if they failed before.
-  for (int i = 0; i < 2; i++) {
-    for (int j = 0; j < kMaxAllocators; j++) {
-      SysAllocator *a = allocators[j];
-      if (a == NULL) continue;
-      if (a->usable_ && !a->failed_) {
-        void* result = a->Alloc(size, actual_size, alignment);
-        if (result != NULL) return result;
-      }
-    }
-
-    // nothing worked - reset failed_ flags and try again
-    for (int j = 0; j < kMaxAllocators; j++) {
-      SysAllocator *a = allocators[j];
-      if (a == NULL) continue;
-      a->failed_ = false;
+  void* result = sys_alloc->Alloc(size, actual_size, alignment);
+  if (result != NULL) {
+    if (actual_size) {
+      CheckAddressBits<kAddressBits>(
+          reinterpret_cast<uintptr_t>(result) + *actual_size - 1);
+    } else {
+      CheckAddressBits<kAddressBits>(
+          reinterpret_cast<uintptr_t>(result) + size - 1);
     }
   }
-  return NULL;
+  return result;
 }
 
 void TCMalloc_SystemRelease(void* start, size_t length) {
-#ifdef MADV_DONTNEED
+#ifdef MADV_FREE
   if (FLAGS_malloc_devmem_start) {
-    // It's not safe to use MADV_DONTNEED if we've been mapping
-    // /dev/mem for heap memory
+    // It's not safe to use MADV_FREE/MADV_DONTNEED if we've been
+    // mapping /dev/mem for heap memory.
     return;
   }
   if (pagesize == 0) pagesize = getpagesize();
@@ -464,20 +521,10 @@ void TCMalloc_SystemRelease(void* start, size_t length) {
     // Note -- ignoring most return codes, because if this fails it
     // doesn't matter...
     while (madvise(reinterpret_cast<char*>(new_start), new_end - new_start,
-                   MADV_DONTNEED) == -1 &&
+                   MADV_FREE) == -1 &&
            errno == EAGAIN) {
       // NOP
     }
   }
 #endif
-}
-
-void DumpSystemAllocatorStats(TCMalloc_Printer* printer) {
-  for (int j = 0; j < kMaxAllocators; j++) {
-    SysAllocator *a = allocators[j];
-    if (a == NULL) continue;
-    if (a->usable_) {
-      a->DumpStats(printer);
-    }
-  }
 }

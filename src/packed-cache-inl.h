@@ -111,8 +111,13 @@
 #ifndef TCMALLOC_PACKED_CACHE_INL_H_
 #define TCMALLOC_PACKED_CACHE_INL_H_
 
-#include "base/basictypes.h"  // for COMPILE_ASSERT
-#include "base/logging.h"     // for DCHECK
+#include "config.h"
+#include <stddef.h>                     // for size_t
+#ifdef HAVE_STDINT_H
+#include <stdint.h>                     // for uintptr_t
+#endif
+#include "base/basictypes.h"
+#include "internal_logging.h"
 
 // A safe way of doing "(1 << n) - 1" -- without worrying about overflow
 // Note this will all be resolved to a constant expression at compile-time
@@ -130,7 +135,12 @@ class PackedCache {
  public:
   typedef uintptr_t K;
   typedef size_t V;
+#ifdef TCMALLOC_SMALL_BUT_SLOW
+  // Decrease the size map cache if running in the small memory mode.
   static const int kHashbits = 12;
+#else
+  static const int kHashbits = 16;
+#endif
   static const int kValuebits = 7;
   static const bool kUseWholeKeys = kKeybits + kValuebits <= 8 * sizeof(T);
 
@@ -144,13 +154,13 @@ class PackedCache {
   }
 
   void Put(K key, V value) {
-    DCHECK_EQ(key, key & kKeyMask);
-    DCHECK_EQ(value, value & kValueMask);
+    ASSERT(key == (key & kKeyMask));
+    ASSERT(value == (value & kValueMask));
     array_[Hash(key)] = KeyToUpper(key) | value;
   }
 
   bool Has(K key) const {
-    DCHECK_EQ(key, key & kKeyMask);
+    ASSERT(key == (key & kKeyMask));
     return KeyMatch(array_[Hash(key)], key);
   }
 
@@ -159,15 +169,15 @@ class PackedCache {
     // as we can.  Assuming entries are read atomically (e.g., their
     // type is uintptr_t on most hardware) then certain races are
     // harmless.
-    DCHECK_EQ(key, key & kKeyMask);
+    ASSERT(key == (key & kKeyMask));
     T entry = array_[Hash(key)];
     return KeyMatch(entry, key) ? EntryToValue(entry) : default_value;
   }
 
   void Clear(V value) {
-    DCHECK_EQ(value, value & kValueMask);
+    ASSERT(value == (value & kValueMask));
     for (int i = 0; i < 1 << kHashbits; i++) {
-      RAW_DCHECK(kUseWholeKeys || KeyToUpper(i) == 0, "KeyToUpper failure");
+      ASSERT(kUseWholeKeys || KeyToUpper(i) == 0);
       array_[i] = kUseWholeKeys ? (value | KeyToUpper(i)) : value;
     }
   }

@@ -48,7 +48,7 @@
 #ifndef BASE_COMMANDLINEFLAGS_H_
 #define BASE_COMMANDLINEFLAGS_H_
 
-#include "config.h"
+#include <config.h>
 #include <string>
 #include <string.h>               // for memchr
 #include <stdlib.h>               // for getenv
@@ -124,5 +124,8 @@
 
 #define EnvToInt64(envname, dflt)  \
   (!getenv(envname) ? (dflt) : strtoll(getenv(envname), NULL, 10))
+
+#define EnvToDouble(envname, dflt)  \
+  (!getenv(envname) ? (dflt) : strtod(getenv(envname), NULL))
 
 #endif  // BASE_COMMANDLINEFLAGS_H_

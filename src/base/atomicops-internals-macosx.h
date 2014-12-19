@@ -26,9 +26,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * ---
- * Author: Mike Burrows
  */
 
 // Implementation of atomic operations for Mac OS X.  This file should not
@@ -55,6 +52,9 @@ typedef int32_t Atomic32;
 #endif
 
 #include <libkern/OSAtomic.h>
+
+namespace base {
+namespace subtle {
 
 #if !defined(__LP64__) && defined(__ppc__)
 
@@ -99,10 +99,6 @@ inline int64_t OSAtomicAdd64Barrier(
   return new_val;
 }
 #endif
-
-
-namespace base {
-namespace subtle {
 
 typedef int64_t Atomic64;
 
@@ -311,7 +307,11 @@ inline void NoBarrier_Store(volatile Atomic64* ptr, Atomic64 value) {
                        "emms\n\t"              // Reset FP registers
                        : "=m" (*ptr)
                        : "m" (value)
-                       : "memory", "%mm0");
+                       : // mark the FP stack and mmx registers as clobbered
+                         "st", "st(1)", "st(2)", "st(3)", "st(4)",
+                         "st(5)", "st(6)", "st(7)", "mm0", "mm1",
+                         "mm2", "mm3", "mm4", "mm5", "mm6", "mm7");
+
 }
 
 inline Atomic64 NoBarrier_Load(volatile const Atomic64* ptr) {
@@ -321,7 +321,11 @@ inline Atomic64 NoBarrier_Load(volatile const Atomic64* ptr) {
                        "emms\n\t"            // Reset FP registers
                        : "=m" (value)
                        : "m" (*ptr)
-                       : "memory", "%mm0");
+                       : // mark the FP stack and mmx registers as clobbered
+                         "st", "st(1)", "st(2)", "st(3)", "st(4)",
+                         "st(5)", "st(6)", "st(7)", "mm0", "mm1",
+                         "mm2", "mm3", "mm4", "mm5", "mm6", "mm7");
+
   return value;
 }
 #endif
@@ -352,9 +356,4 @@ inline Atomic64 Release_Load(volatile const Atomic64 *ptr) {
 }   // namespace base::subtle
 }   // namespace base
 
-// NOTE(vchen): The following is also deprecated.  New callers should use
-// the base::subtle namespace.
-inline void MemoryBarrier() {
-  base::subtle::MemoryBarrier();
-}
 #endif  // BASE_ATOMICOPS_INTERNALS_MACOSX_H_

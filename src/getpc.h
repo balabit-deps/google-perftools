@@ -55,8 +55,13 @@
 //#define _XOPEN_SOURCE 500
 
 #include <string.h>         // for memcmp
-#ifdef HAVE_UCONTEXT_H
+#if defined(HAVE_SYS_UCONTEXT_H)
+#include <sys/ucontext.h>
+#elif defined(HAVE_UCONTEXT_H)
 #include <ucontext.h>       // for ucontext_t (and also mcontext_t)
+#elif defined(HAVE_CYGWIN_SIGNAL_H)
+#include <cygwin/signal.h>
+typedef ucontext ucontext_t;
 #endif
 
 
@@ -147,7 +152,7 @@ inline void* GetPC(const ucontext_t& signal_ucontext) {
 }
 
 // Special case #2: Windows, which has to do something totally different.
-#elif defined(WIN32)
+#elif defined(_WIN32) || defined(__CYGWIN__) || defined(__CYGWIN32__) || defined(__MINGW32__)
 // If this is ever implemented, probably the way to do it is to have
 // profiler.cc use a high-precision timer via timeSetEvent:
 //    http://msdn2.microsoft.com/en-us/library/ms712713.aspx
@@ -158,6 +163,9 @@ inline void* GetPC(const ucontext_t& signal_ucontext) {
 //    http://msdn2.microsoft.com/en-us/library/ms680650.aspx
 
 #include "base/logging.h"   // for RAW_LOG
+#ifndef HAVE_CYGWIN_SIGNAL_H
+typedef int ucontext_t;
+#endif
 
 inline void* GetPC(const struct ucontext_t& signal_ucontext) {
   RAW_LOG(ERROR, "GetPC is not yet implemented on Windows\n");

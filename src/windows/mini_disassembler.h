@@ -36,13 +36,14 @@
 #ifndef GOOGLE_PERFTOOLS_MINI_DISASSEMBLER_H_
 #define GOOGLE_PERFTOOLS_MINI_DISASSEMBLER_H_
 
+#include "config.h"
 #include <windows.h>
 #include "mini_disassembler_types.h"
 
 // compatibility shim
 #include "base/logging.h"
-#define ASSERT(cond, msg)  RAW_DCHECK(cond, msg)
-#define ASSERT1(cond)      RAW_DCHECK(cond, #cond)
+#define SIDESTEP_ASSERT(cond)  RAW_DCHECK(cond, #cond)
+#define SIDESTEP_LOG(msg)      RAW_VLOG(1, msg)
 
 namespace sidestep {
 
@@ -52,8 +53,8 @@ namespace sidestep {
 //
 // The limitations include at least the following:
 //  -# No support for coprocessor opcodes, MMX, etc.
-//  -# No machine-readable identification of opcodes or decoding of 
-//     assembly parameters. The name of the opcode (as a string) is given, 
+//  -# No machine-readable identification of opcodes or decoding of
+//     assembly parameters. The name of the opcode (as a string) is given,
 //     however, to aid debugging.
 //
 // You may ask what this little disassembler actually does, then?  The answer is
@@ -74,7 +75,7 @@ namespace sidestep {
 // IA-32 Intel® Architecture Software Developer’s Manual Volume 2:
 // Instruction Set Reference for information about operand decoding
 // etc.
-class MiniDisassembler {
+class PERFTOOLS_DLL_DECL MiniDisassembler {
  public:
 
   // Creates a new instance and sets defaults.
@@ -102,7 +103,7 @@ class MiniDisassembler {
   //
   // @post This instance of the disassembler is ready to be used again,
   // with unchanged defaults from creation time.
-  InstructionType Disassemble(byte* start, unsigned int& instruction_bytes);
+  InstructionType Disassemble(unsigned char* start, unsigned int& instruction_bytes);
 
  private:
 
@@ -111,13 +112,13 @@ class MiniDisassembler {
 
   // Sets the flags for address and operand sizes.
   // @return Number of prefix bytes.
-  InstructionType ProcessPrefixes(byte* start, unsigned int& size);
+  InstructionType ProcessPrefixes(unsigned char* start, unsigned int& size);
 
   // Sets the flag for whether we have ModR/M, and increments
   // operand_bytes_ if any are specifies by the opcode directly.
   // @return Number of opcode bytes.
-  InstructionType ProcessOpcode(byte* start, 
-                                unsigned int table, 
+  InstructionType ProcessOpcode(unsigned char* start,
+                                unsigned int table,
                                 unsigned int& size);
 
   // Checks the type of the supplied operand.  Increments
@@ -130,13 +131,13 @@ class MiniDisassembler {
   // by SIB if present.
   // @return 0 in case of error, 1 if there is just a ModR/M byte,
   // 2 if there is a ModR/M byte and a SIB byte.
-  bool ProcessModrm(byte* start, unsigned int& size);
+  bool ProcessModrm(unsigned char* start, unsigned int& size);
 
   // Processes the SIB byte that it is pointed to.
   // @param start Pointer to the SIB byte.
   // @param mod The mod field from the ModR/M byte.
   // @return 1 to indicate success (indicates 1 SIB byte)
-  bool ProcessSib(byte* start, byte mod, unsigned int& size);
+  bool ProcessSib(unsigned char* start, unsigned char mod, unsigned int& size);
 
   // The instruction type we have decoded from the opcode.
   InstructionType instruction_type_;
@@ -164,6 +165,12 @@ class MiniDisassembler {
 
   // Default address size is 32 bits if true, 16 bits if false.
   bool address_default_is_32_bits_;
+
+  // Determines if 64 bit operands are supported (x64).
+  bool operand_default_support_64_bits_;
+
+  // Current operand size is 64 bits if true, 32 bits if false.
+  bool operand_is_64_bits_;
 
   // Huge big opcode table based on the IA-32 manual, defined
   // in Ia32OpcodeMap.cc

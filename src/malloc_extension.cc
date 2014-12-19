@@ -30,7 +30,7 @@
 // ---
 // Author: Sanjay Ghemawat <opensource@google.com>
 
-#include "config.h"
+#include <config.h>
 #include <assert.h>
 #include <string.h>
 #include <stdio.h>
@@ -42,11 +42,36 @@
 #include <sys/types.h>
 #endif
 #include <string>
-#include HASH_SET_H          // defined in config.h
-#include "google/malloc_extension.h"
+#include "base/dynamic_annotations.h"
+#include "base/sysinfo.h"    // for FillProcSelfMaps
+#ifndef NO_HEAP_CHECK
+#include "gperftools/heap-checker.h"
+#endif
+#include "gperftools/malloc_extension.h"
+#include "gperftools/malloc_extension_c.h"
 #include "maybe_threads.h"
 
 using STL_NAMESPACE::string;
+using STL_NAMESPACE::vector;
+
+static void DumpAddressMap(string* result) {
+  *result += "\nMAPPED_LIBRARIES:\n";
+  // We keep doubling until we get a fit
+  const size_t old_resultlen = result->size();
+  for (int amap_size = 10240; amap_size < 10000000; amap_size *= 2) {
+    result->resize(old_resultlen + amap_size);
+    bool wrote_all = false;
+    const int bytes_written =
+        tcmalloc::FillProcSelfMaps(&((*result)[old_resultlen]), amap_size,
+                                   &wrote_all);
+    if (wrote_all) {   // we fit!
+      (*result)[old_resultlen + bytes_written] = '\0';
+      result->resize(old_resultlen + bytes_written);
+      return;
+    }
+  }
+  result->reserve(old_resultlen);   // just don't print anything
+}
 
 // Note: this routine is meant to be called before threads are spawned.
 void MallocExtension::Initialize() {
@@ -77,12 +102,15 @@ void MallocExtension::Initialize() {
 #endif  /* __GLIBC__ */
 }
 
+// SysAllocator implementation
+SysAllocator::~SysAllocator() {}
+
 // Default implementation -- does nothing
 MallocExtension::~MallocExtension() { }
 bool MallocExtension::VerifyAllMemory() { return true; }
-bool MallocExtension::VerifyNewMemory(void* p) { return true; }
-bool MallocExtension::VerifyArrayNewMemory(void* p) { return true; }
-bool MallocExtension::VerifyMallocMemory(void* p) { return true; }
+bool MallocExtension::VerifyNewMemory(const void* p) { return true; }
+bool MallocExtension::VerifyArrayNewMemory(const void* p) { return true; }
+bool MallocExtension::VerifyMallocMemory(const void* p) { return true; }
 
 bool MallocExtension::GetNumericProperty(const char* property, size_t* value) {
   return false;
@@ -101,11 +129,11 @@ bool MallocExtension::MallocMemoryStats(int* blocks, size_t* total,
                                        int histogram[kMallocHistogramSize]) {
   *blocks = 0;
   *total = 0;
-  memset(histogram, 0, sizeof(histogram));
+  memset(histogram, 0, sizeof(*histogram) * kMallocHistogramSize);
   return true;
 }
 
-void** MallocExtension::ReadStackTraces() {
+void** MallocExtension::ReadStackTraces(int* sample_period) {
   return NULL;
 }
 
@@ -117,21 +145,62 @@ void MallocExtension::MarkThreadIdle() {
   // Default implementation does nothing
 }
 
-void MallocExtension::ReleaseFreeMemory() {
+void MallocExtension::MarkThreadBusy() {
   // Default implementation does nothing
 }
 
-// The current malloc extension object.  We also keep a pointer to
-// the default implementation so that the heap-leak checker does not
-// complain about a memory leak.
+SysAllocator* MallocExtension::GetSystemAllocator() {
+  return NULL;
+}
+
+void MallocExtension::SetSystemAllocator(SysAllocator *a) {
+  // Default implementation does nothing
+}
+
+void MallocExtension::ReleaseToSystem(size_t num_bytes) {
+  // Default implementation does nothing
+}
+
+void MallocExtension::ReleaseFreeMemory() {
+  ReleaseToSystem(static_cast<size_t>(-1));   // SIZE_T_MAX
+}
+
+void MallocExtension::SetMemoryReleaseRate(double rate) {
+  // Default implementation does nothing
+}
+
+double MallocExtension::GetMemoryReleaseRate() {
+  return -1.0;
+}
+
+size_t MallocExtension::GetEstimatedAllocatedSize(size_t size) {
+  return size;
+}
+
+size_t MallocExtension::GetAllocatedSize(const void* p) {
+  assert(GetOwnership(p) != kNotOwned);
+  return 0;
+}
+
+MallocExtension::Ownership MallocExtension::GetOwnership(const void* p) {
+  return kUnknownOwnership;
+}
+
+void MallocExtension::GetFreeListSizes(
+    vector<MallocExtension::FreeListInfo>* v) {
+  v->clear();
+}
+
+// The current malloc extension object.
 
 static pthread_once_t module_init = PTHREAD_ONCE_INIT;
-static MallocExtension* default_instance = NULL;
 static MallocExtension* current_instance = NULL;
 
 static void InitModule() {
-  default_instance = new MallocExtension;
-  current_instance = default_instance;
+  current_instance = new MallocExtension;
+#ifndef NO_HEAP_CHECK
+  HeapLeakChecker::IgnoreObject(current_instance);
+#endif
 }
 
 MallocExtension* MallocExtension::instance() {
@@ -141,7 +210,14 @@ MallocExtension* MallocExtension::instance() {
 
 void MallocExtension::Register(MallocExtension* implementation) {
   perftools_pthread_once(&module_init, InitModule);
-  current_instance = implementation;
+  // When running under valgrind, our custom malloc is replaced with
+  // valgrind's one and malloc extensions will not work.  (Note:
+  // callers should be responsible for checking that they are the
+  // malloc that is really being run, before calling Register.  This
+  // is just here as an extra sanity check.)
+  if (!RunningOnValgrind()) {
+    current_instance = implementation;
+  }
 }
 
 // -----------------------------------------------------------------------
@@ -164,66 +240,20 @@ void* PC(void** entry, int i) {
   return entry[3+i];
 }
 
-// Hash table routines for grouping all entries with same stack trace
-struct StackTraceHash {
-  size_t operator()(void** entry) const {
-    uintptr_t h = 0;
-    for (int i = 0; i < Depth(entry); i++) {
-      h += reinterpret_cast<uintptr_t>(PC(entry, i));
-      h += h << 10;
-      h ^= h >> 6;
-    }
-    h += h << 3;
-    h ^= h >> 11;
-    return h;
-  }
-  // Less operator for MSVC's hash containers.
-  bool operator()(void** entry1, void** entry2) const {
-    if (Depth(entry1) != Depth(entry2))
-      return Depth(entry1) < Depth(entry2);
-    for (int i = 0; i < Depth(entry1); i++) {
-      if (PC(entry1, i) != PC(entry2, i)) {
-        return PC(entry1, i) < PC(entry2, i);
-      }
-    }
-    return false;  // entries are equal
-  }
-  // These two public members are required by msvc.  4 and 8 are the
-  // default values.
-  static const size_t bucket_size = 4;
-  static const size_t min_buckets = 8;
-};
-
-struct StackTraceEqual {
-  bool operator()(void** entry1, void** entry2) const {
-    if (Depth(entry1) != Depth(entry2)) return false;
-    for (int i = 0; i < Depth(entry1); i++) {
-      if (PC(entry1, i) != PC(entry2, i)) {
-        return false;
-      }
-    }
-    return true;
-  }
-};
-
-#ifdef WIN32
-typedef HASH_NAMESPACE::hash_set<void**, StackTraceHash> StackTraceTable;
-#else
-typedef HASH_NAMESPACE::hash_set<void**, StackTraceHash, StackTraceEqual> StackTraceTable;
-#endif
-
-void PrintCountAndSize(string* result, uintptr_t count, uintptr_t size) {
+void PrintCountAndSize(MallocExtensionWriter* writer,
+                       uintptr_t count, uintptr_t size) {
   char buf[100];
   snprintf(buf, sizeof(buf),
-           "%6lld: %8lld [%6lld: %8lld] @",
-           static_cast<long long>(count),
-           static_cast<long long>(size),
-           static_cast<long long>(count),
-           static_cast<long long>(size));
-  *result += buf;
+           "%6"PRIu64": %8"PRIu64" [%6"PRIu64": %8"PRIu64"] @",
+           static_cast<uint64>(count),
+           static_cast<uint64>(size),
+           static_cast<uint64>(count),
+           static_cast<uint64>(size));
+  writer->append(buf, strlen(buf));
 }
 
-void PrintHeader(string* result, const char* label, void** entries) {
+void PrintHeader(MallocExtensionWriter* writer,
+                 const char* label, void** entries) {
   // Compute the total count and total size
   uintptr_t total_count = 0;
   uintptr_t total_size = 0;
@@ -232,79 +262,111 @@ void PrintHeader(string* result, const char* label, void** entries) {
     total_size += Size(entry);
   }
 
-  *result += string("heap profile: ");
-  PrintCountAndSize(result, total_count, total_size);
-  *result += string(" ") + label + "\n";
+  const char* const kTitle = "heap profile: ";
+  writer->append(kTitle, strlen(kTitle));
+  PrintCountAndSize(writer, total_count, total_size);
+  writer->append(" ", 1);
+  writer->append(label, strlen(label));
+  writer->append("\n", 1);
 }
 
-void PrintStackEntry(string* result, void** entry) {
-  PrintCountAndSize(result, Count(entry), Size(entry));
+void PrintStackEntry(MallocExtensionWriter* writer, void** entry) {
+  PrintCountAndSize(writer, Count(entry), Size(entry));
 
   for (int i = 0; i < Depth(entry); i++) {
     char buf[32];
     snprintf(buf, sizeof(buf), " %p", PC(entry, i));
-    *result += buf;
+    writer->append(buf, strlen(buf));
   }
-  *result += "\n";
+  writer->append("\n", 1);
 }
 
 }
 
-void MallocExtension::GetHeapSample(string* result) {
-  void** entries = ReadStackTraces();
+void MallocExtension::GetHeapSample(MallocExtensionWriter* writer) {
+  int sample_period = 0;
+  void** entries = ReadStackTraces(&sample_period);
   if (entries == NULL) {
-    *result += "This malloc implementation does not support sampling.\n"
-               "As of 2005/01/26, only tcmalloc supports sampling, and you\n"
-               "are probably running a binary that does not use tcmalloc.\n";
+    const char* const kErrorMsg =
+        "This malloc implementation does not support sampling.\n"
+        "As of 2005/01/26, only tcmalloc supports sampling, and\n"
+        "you are probably running a binary that does not use\n"
+        "tcmalloc.\n";
+    writer->append(kErrorMsg, strlen(kErrorMsg));
     return;
   }
 
-  // Group together all entries with same stack trace
-  StackTraceTable table;
+  char label[32];
+  sprintf(label, "heap_v2/%d", sample_period);
+  PrintHeader(writer, label, entries);
   for (void** entry = entries; Count(entry) != 0; entry += 3 + Depth(entry)) {
-    StackTraceTable::iterator iter = table.find(entry);
-    if (iter == table.end()) {
-      // New occurrence
-      table.insert(entry);
-    } else {
-      void** canonical = *iter;
-      canonical[0] = reinterpret_cast<void*>(Count(canonical) + Count(entry));
-      canonical[1] = reinterpret_cast<void*>(Size(canonical) +  Size(entry));
-    }
+    PrintStackEntry(writer, entry);
   }
-
-  PrintHeader(result, "heap", entries);
-  for (StackTraceTable::iterator iter = table.begin();
-       iter != table.end();
-       ++iter) {
-    PrintStackEntry(result, *iter);
-  }
-
-  // TODO(menage) Get this working in google-perftools
-  //DumpAddressMap(DebugStringWriter, result);
   delete[] entries;
+
+  DumpAddressMap(writer);
 }
 
-void MallocExtension::GetHeapGrowthStacks(string* result) {
+void MallocExtension::GetHeapGrowthStacks(MallocExtensionWriter* writer) {
   void** entries = ReadHeapGrowthStackTraces();
   if (entries == NULL) {
-    *result += "This malloc implementation does not support "
-               "ReadHeapGrowthStackTraces().\n"
-               "As of 2005/09/27, only tcmalloc supports this, and you\n"
-               "are probably running a binary that does not use tcmalloc.\n";
+    const char* const kErrorMsg =
+        "This malloc implementation does not support "
+        "ReadHeapGrowthStackTraces().\n"
+        "As of 2005/09/27, only tcmalloc supports this, and you\n"
+        "are probably running a binary that does not use tcmalloc.\n";
+    writer->append(kErrorMsg, strlen(kErrorMsg));
     return;
   }
 
   // Do not canonicalize the stack entries, so that we get a
   // time-ordered list of stack traces, which may be useful if the
   // client wants to focus on the latest stack traces.
-
-  PrintHeader(result, "growth", entries);
+  PrintHeader(writer, "growth", entries);
   for (void** entry = entries; Count(entry) != 0; entry += 3 + Depth(entry)) {
-    PrintStackEntry(result, entry);
+    PrintStackEntry(writer, entry);
   }
   delete[] entries;
 
-  // TODO(menage) Get this working in google-perftools
-  //DumpAddressMap(DebugStringWriter, result);
+  DumpAddressMap(writer);
+}
+
+void MallocExtension::Ranges(void* arg, RangeFunction func) {
+  // No callbacks by default
+}
+
+// These are C shims that work on the current instance.
+
+#define C_SHIM(fn, retval, paramlist, arglist)          \
+  extern "C" PERFTOOLS_DLL_DECL retval MallocExtension_##fn paramlist {    \
+    return MallocExtension::instance()->fn arglist;     \
+  }
+
+C_SHIM(VerifyAllMemory, int, (void), ());
+C_SHIM(VerifyNewMemory, int, (const void* p), (p));
+C_SHIM(VerifyArrayNewMemory, int, (const void* p), (p));
+C_SHIM(VerifyMallocMemory, int, (const void* p), (p));
+C_SHIM(MallocMemoryStats, int,
+       (int* blocks, size_t* total, int histogram[kMallocHistogramSize]),
+       (blocks, total, histogram));
+
+C_SHIM(GetStats, void,
+       (char* buffer, int buffer_length), (buffer, buffer_length));
+C_SHIM(GetNumericProperty, int,
+       (const char* property, size_t* value), (property, value));
+C_SHIM(SetNumericProperty, int,
+       (const char* property, size_t value), (property, value));
+
+C_SHIM(MarkThreadIdle, void, (void), ());
+C_SHIM(MarkThreadBusy, void, (void), ());
+C_SHIM(ReleaseFreeMemory, void, (void), ());
+C_SHIM(ReleaseToSystem, void, (size_t num_bytes), (num_bytes));
+C_SHIM(GetEstimatedAllocatedSize, size_t, (size_t size), (size));
+C_SHIM(GetAllocatedSize, size_t, (const void* p), (p));
+
+// Can't use the shim here because of the need to translate the enums.
+extern "C"
+MallocExtension_Ownership MallocExtension_GetOwnership(const void* p) {
+  return static_cast<MallocExtension_Ownership>(
+      MallocExtension::instance()->GetOwnership(p));
 }

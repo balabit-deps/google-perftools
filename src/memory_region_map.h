@@ -34,14 +34,16 @@
 #ifndef BASE_MEMORY_REGION_MAP_H_
 #define BASE_MEMORY_REGION_MAP_H_
 
-#include "config.h"
+#include <config.h>
 
 #ifdef HAVE_PTHREAD
 #include <pthread.h>
 #endif
+#include <stddef.h>
 #include <set>
 #include "base/stl_allocator.h"
 #include "base/spinlock.h"
+#include "base/thread_annotations.h"
 #include "base/low_level_alloc.h"
 
 // TODO(maxim): add a unittest:
@@ -63,8 +65,14 @@
 // For more details on the design of MemoryRegionMap
 // see the comment at the top of our .cc file.
 class MemoryRegionMap {
- public:
+ private:
+  // Max call stack recording depth supported by Init().  Set it to be
+  // high enough for all our clients.  Note: we do not define storage
+  // for this (doing that requires special handling in windows), so
+  // don't take the address of it!
+  static const int kMaxStackDepth = 32;
 
+ public:
   // interface ================================================================
 
   // Every client of MemoryRegionMap must call Init() before first use,
@@ -85,25 +93,17 @@ class MemoryRegionMap {
   // Uses Lock/Unlock inside.
   static void Init(int max_stack_depth);
 
-  // Max call stack recording depth supported by Init().
-  // Set it to be high enough for all our clients.
-  static const int kMaxStackDepth = 32;
-
   // Try to shutdown this module undoing what Init() did.
   // Returns true iff could do full shutdown (or it was not attempted).
   // Full shutdown is attempted when the number of Shutdown() calls equals
   // the number of Init() calls.
   static bool Shutdown();
 
-  // Check that our hooks are still in place and crash if not.
-  // No need for locking.
-  static void CheckMallocHooks();
-
   // Locks to protect our internal data structures.
   // These also protect use of arena_ if our Init() has been done.
   // The lock is recursive.
-  static void Lock();
-  static void Unlock();
+  static void Lock() EXCLUSIVE_LOCK_FUNCTION(lock_);
+  static void Unlock() UNLOCK_FUNCTION(lock_);
 
   // Returns true when the lock is held by this thread (for use in RAW_CHECK-s).
   static bool LockIsHeld();
@@ -115,7 +115,7 @@ class MemoryRegionMap {
     LockHolder() { Lock(); }
     ~LockHolder() { Unlock(); }
    private:
-    DISALLOW_EVIL_CONSTRUCTORS(LockHolder);
+    DISALLOW_COPY_AND_ASSIGN(LockHolder);
   };
 
   // A memory region that we know about through malloc_hook-s.
@@ -228,7 +228,7 @@ class MemoryRegionMap {
     static void *Allocate(size_t n) {
       return LowLevelAlloc::AllocWithArena(n, arena_);
     }
-    static void Free(const void *p) {
+    static void Free(const void *p, size_t /* n */) {
       LowLevelAlloc::Free(const_cast<void*>(p));
     }
   };
@@ -252,12 +252,15 @@ class MemoryRegionMap {
   static RegionIterator BeginRegionLocked();
   static RegionIterator EndRegionLocked();
 
+  // Return the accumulated sizes of mapped and unmapped regions.
+  static int64 MapSize() { return map_size_; }
+  static int64 UnmapSize() { return unmap_size_; }
+
   // Effectively private type from our .cc =================================
   // public to let us declare global objects:
   union RegionSetRep;
 
  private:
-
   // representation ===========================================================
 
   // Counter of clients of this module that have called Init().
@@ -286,6 +289,11 @@ class MemoryRegionMap {
   static int recursion_count_;
   // The thread id of the thread that's inside the recursive lock.
   static pthread_t lock_owner_tid_;
+
+  // Total size of all mapped pages so far
+  static int64 map_size_;
+  // Total size of all unmapped pages so far
+  static int64 unmap_size_;
 
   // helpers ==================================================================
 
@@ -326,7 +334,7 @@ class MemoryRegionMap {
   // Assumes Lock() is held
   static void LogAllLocked();
 
-  DISALLOW_EVIL_CONSTRUCTORS(MemoryRegionMap);
+  DISALLOW_COPY_AND_ASSIGN(MemoryRegionMap);
 };
 
 #endif  // BASE_MEMORY_REGION_MAP_H_

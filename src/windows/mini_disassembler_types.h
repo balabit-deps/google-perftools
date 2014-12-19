@@ -82,7 +82,7 @@ enum OperandSize {
 // is a mask for the rest.  The other enumeration values are named for the
 // names given to the addressing methods in the manual, e.g. enAm_D is for
 // the D addressing method.
-// 
+//
 // The reason we use a full 4 bytes and a mask, is that we need to combine
 // these flags with the enOperandType to store the details
 // on the operand in a single integer.
@@ -138,9 +138,19 @@ enum OperandType {
   OT_W = 0x0E000000,
   OT_SD = 0x0F000000,  // scalar double-precision floating-point value
   OT_PD = 0x10000000,  // double-precision floating point
-  // dummy "operand type" for address mode M - which doesn't specify 
+  // dummy "operand type" for address mode M - which doesn't specify
   // operand type
   OT_ADDRESS_MODE_M = 0x80000000
+};
+
+// Flag that indicates if an immediate operand is 64-bits.
+//
+// The Intel 64 and IA-32 Architecture Software Developer's Manual currently
+// defines MOV as the only instruction supporting a 64-bit immediate operand.
+enum ImmediateOperandSize {
+  IOS_MASK = 0x0000F000,
+  IOS_DEFAULT = 0x0,
+  IOS_64 = 0x00001000
 };
 
 // Everything that's in an Opcode (see below) except the three
@@ -148,14 +158,14 @@ enum OperandType {
 struct SpecificOpcode {
   // Index to continuation table, or 0 if this is the last
   // byte in the opcode.
-  int table_index_;    
+  int table_index_;
 
   // The opcode type
   InstructionType type_;
 
   // Description of the type of the dest, src and aux operands,
-  // put together from an enOperandType flag and an enAddressingMethod
-  // flag.
+  // put together from enOperandType, enAddressingMethod and 
+  // enImmediateOperandSize flags.
   int flag_dest_;
   int flag_source_;
   int flag_aux_;
@@ -169,7 +179,7 @@ struct SpecificOpcode {
 struct Opcode {
   // Index to continuation table, or 0 if this is the last
   // byte in the opcode.
-  int table_index_;    
+  int table_index_;
 
   // The opcode type
   InstructionType type_;

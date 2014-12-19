@@ -12,20 +12,24 @@
 #ifndef GOOGLE_PERFTOOLS_WINDOWS_CONFIG_H_
 #define GOOGLE_PERFTOOLS_WINDOWS_CONFIG_H_
 
-/* the location of <hash_map> */
-#define HASH_MAP_H  <hash_map>
+/* define this if you are linking tcmalloc statically and overriding the
+ * default allocators.
+ * For instructions on how to use this mode, see
+ * http://groups.google.com/group/google-perftools/browse_thread/thread/41cd3710af85e57b
+ */
+#undef WIN32_OVERRIDE_ALLOCATORS
 
-/* the namespace of hash_map/hash_set */
-#define HASH_NAMESPACE  stdext
-
-/* the location of <hash_set> */
-#define HASH_SET_H  <hash_set>
+/* Define to 1 if your libc has a snprintf implementation */
+#undef HAVE_SNPRINTF
 
 /* Define to 1 if compiler supports __builtin_stack_pointer */
 #undef HAVE_BUILTIN_STACK_POINTER
 
 /* Define to 1 if you have the <conflict-signal.h> header file. */
 #undef HAVE_CONFLICT_SIGNAL_H
+
+/* Define to 1 if you have the <cygwin/signal.h> header file. */
+#undef HAVE_CYGWIN_SIGNAL_H
 
 /* Define to 1 if you have the declaration of `cfree', and to 0 if you don't.
    */
@@ -54,11 +58,17 @@
 /* Define to 1 if you have the <dlfcn.h> header file. */
 #undef HAVE_DLFCN_H
 
+/* Define to 1 if the system has the type `Elf32_Versym'. */
+#undef HAVE_ELF32_VERSYM
+
 /* Define to 1 if you have the <execinfo.h> header file. */
 #undef HAVE_EXECINFO_H
 
 /* Define to 1 if you have the <fcntl.h> header file. */
 #undef HAVE_FCNTL_H
+
+/* Define to 1 if you have the <features.h> header file. */
+#undef HAVE_FEATURES_H
 
 /* Define to 1 if you have the `geteuid' function. */
 #undef HAVE_GETEUID
@@ -72,12 +82,6 @@
 /* Define to 1 if you have the <grp.h> header file. */
 #undef HAVE_GRP_H
 
-/* define if the compiler has hash_map */
-#define HAVE_HASH_MAP 1
-
-/* define if the compiler has hash_set */
-#define HAVE_HASH_SET 1
-
 /* Define to 1 if you have the <inttypes.h> header file. */
 #undef HAVE_INTTYPES_H
 
@@ -88,7 +92,10 @@
 #undef HAVE_LINUX_PTRACE_H
 
 /* Define to 1 if you have the <malloc.h> header file. */
-#undef HAVE_MALLOC_H
+#define HAVE_MALLOC_H 1
+
+/* Define to 1 if you have the <malloc/malloc.h> header file. */
+#undef HAVE_MALLOC_MALLOC_H
 
 /* Define to 1 if you have the <memory.h> header file. */
 #undef HAVE_MEMORY_H
@@ -98,6 +105,9 @@
 
 /* define if the compiler implements namespaces */
 #define HAVE_NAMESPACES 1
+
+/* Define to 1 if you have the <poll.h> header file. */
+#undef HAVE_POLL_H
 
 /* define if libc has program_invocation_name */
 #undef HAVE_PROGRAM_INVOCATION_NAME
@@ -110,6 +120,9 @@
 
 /* Define to 1 if you have the `sbrk' function. */
 #undef HAVE_SBRK
+
+/* Define to 1 if you have the <sched.h> header file. */
+#undef HAVE_SCHED_H
 
 /* Define to 1 if you have the <stdint.h> header file. */
 #undef HAVE_STDINT_H
@@ -126,11 +139,23 @@
 /* Define to 1 if the system has the type `struct mallinfo'. */
 #undef HAVE_STRUCT_MALLINFO
 
+/* Define to 1 if you have the <sys/cdefs.h> header file. */
+#undef HAVE_SYS_CDEFS_H
+
+/* Define to 1 if you have the <sys/malloc.h> header file. */
+#undef HAVE_SYS_MALLOC_H
+
+/* Define to 1 if you have the <sys/param.h> header file. */
+#undef HAVE_SYS_PARAM_H
+
 /* Define to 1 if you have the <sys/prctl.h> header file. */
 #undef HAVE_SYS_PRCTL_H
 
 /* Define to 1 if you have the <sys/resource.h> header file. */
 #undef HAVE_SYS_RESOURCE_H
+
+/* Define to 1 if you have the <sys/socket.h> header file. */
+#undef HAVE_SYS_SOCKET_H
 
 /* Define to 1 if you have the <sys/stat.h> header file. */
 #define HAVE_SYS_STAT_H 1
@@ -140,6 +165,12 @@
 
 /* Define to 1 if you have the <sys/types.h> header file. */
 #define HAVE_SYS_TYPES_H 1
+
+/* <sys/ucontext.h> is broken on redhat 7 */
+#undef HAVE_SYS_UCONTEXT_H
+
+/* Define to 1 if you have the <sys/wait.h> header file. */
+#undef HAVE_SYS_WAIT_H
 
 /* Define to 1 if compiler supports __thread */
 #define HAVE_TLS 1
@@ -153,8 +184,14 @@
 /* Define to 1 if you have the <unwind.h> header file. */
 #undef HAVE_UNWIND_H
 
+/* Define to 1 if you have the <valgrind.h> header file. */
+#undef HAVE_VALGRIND_H
+
 /* define if your compiler has __attribute__ */
 #undef HAVE___ATTRIBUTE__
+
+/* Define to 1 if compiler supports __environ */
+#undef HAVE___ENVIRON
 
 /* Define to 1 if the system has the type `__int64'. */
 #define HAVE___INT64 1
@@ -165,23 +202,36 @@
 /* Define to 1 if int32_t is equivalent to intptr_t */
 #undef INT32_EQUALS_INTPTR
 
+/* Define to the sub-directory in which libtool stores uninstalled libraries.
+   */
+#undef LT_OBJDIR
+
+/* Define to 'volatile' if __malloc_hook is declared volatile */
+#undef MALLOC_HOOK_MAYBE_VOLATILE
+
+/* Define to 1 if your C compiler doesn't accept -c and -o together. */
+#undef NO_MINUS_C_MINUS_O
+
 /* Name of package */
-#undef PACKAGE
+#define PACKAGE "gperftools"
 
 /* Define to the address where bug reports for this package should be sent. */
-#undef PACKAGE_BUGREPORT
+#define PACKAGE_BUGREPORT "opensource@google.com"
 
 /* Define to the full name of this package. */
-#undef PACKAGE_NAME
+#define PACKAGE_NAME "gperftools"
 
 /* Define to the full name and version of this package. */
-#undef PACKAGE_STRING
+#define PACKAGE_STRING "gperftools 2.0"
 
 /* Define to the one symbol short name of this package. */
-#undef PACKAGE_TARNAME
+#define PACKAGE_TARNAME "gperftools"
+
+/* Define to the home page for this package. */
+#undef PACKAGE_URL
 
 /* Define to the version of this package. */
-#undef PACKAGE_VERSION
+#define PACKAGE_VERSION "2.0"
 
 /* How to access the PC from a struct ucontext */
 #undef PC_FROM_UCONTEXT
@@ -205,6 +255,12 @@
 
 /* printf format code for printing a size_t and ssize_t */
 #define PRIxS  "Ix"
+
+/* Mark the systems where we know it's bad if pthreads runs too
+   early before main (before threads are initialized, presumably).  */
+#ifdef __FreeBSD__
+#define PTHREADS_CRASHES_IF_RUN_TOO_EARLY 1
+#endif
 
 /* Define to necessary symbol if this constant uses a non-standard name on
    your system. */
@@ -233,11 +289,16 @@
 // ---------------------------------------------------------------------
 // Extra stuff not found in config.h.in
 
-// This must be defined before the windows.h is included.  It's needed
-// for mutex.h, to give access to the TryLock method.
+// This must be defined before the windows.h is included.  We need at
+// least 0x0400 for mutex.h to have access to TryLock, and at least
+// 0x0501 for patch_functions.cc to have access to GetModuleHandleEx.
+// (This latter is an optimization we could take out if need be.)
 #ifndef _WIN32_WINNT
-# define _WIN32_WINNT 0x0400
+# define _WIN32_WINNT 0x0501
 #endif
+
+// We want to make sure not to ever try to #include heap-checker.h
+#define NO_HEAP_CHECK 1
 
 // TODO(csilvers): include windows/port.h in every relevant source file instead?
 #include "windows/port.h"

@@ -3,7 +3,7 @@
 
 <HEAD>
   <link rel="stylesheet" href="designstyle.css">
-  <title>Google Heap Profiler</title>
+  <title>Gperftools Heap Profiler</title>
 </HEAD>
 
 <BODY>
@@ -66,11 +66,14 @@ for a given run of an executable:</p>
        <pre>% env HEAPPROFILE=/tmp/mybin.hprof /usr/local/bin/my_binary_compiled_with_tcmalloc</pre>
   <li> <p>In your code, bracket the code you want profiled in calls to
        <code>HeapProfilerStart()</code> and <code>HeapProfilerStop()</code>.
-       (These functions are declared in <code>&lt;google/heap-profiler.h&gt;</code>.)
-       <code>HeapProfilerStart()</code> will take
-       the profile-filename-prefix as an argument.  You can then use
-       <code>HeapProfilerDump()</code> or
-       <code>GetHeapProfile()</code> to examine the profile.</p>
+       (These functions are declared in <code>&lt;gperftools/heap-profiler.h&gt;</code>.)
+       <code>HeapProfilerStart()</code> will take the
+       profile-filename-prefix as an argument.  Then, as often as
+       you'd like before calling <code>HeapProfilerStop()</code>, you
+       can use <code>HeapProfilerDump()</code> or
+       <code>GetHeapProfile()</code> to examine the profile.  In case
+       it's useful, <code>IsHeapProfilerRunning()</code> will tell you
+       whether you've already called HeapProfilerStart() or not.</p>
 </ol>
 
 
@@ -80,7 +83,7 @@ and is thus not usable -- for setuid programs.</p>
 <H2>Modifying Runtime Behavior</H2>
 
 <p>You can more finely control the behavior of the heap profiler via
-commandline flags.</p>
+environment variables.</p>
 
 <table frame=box rules=sides cellpadding=5 width=100%>
 
@@ -106,10 +109,15 @@ commandline flags.</p>
   <td><code>HEAP_PROFILE_MMAP</code></td>
   <td>default: false</td>
   <td>
-    Profile <code>mmap</code>, <code>mremap</code>, and <code>sbrk</code>
-    calls in addition to
-    <code>malloc</code>, <code>calloc</code>, <code>realloc</code>,
-    and <code>new</code>.
+    Profile <code>mmap</code>, <code>mremap</code> and <code>sbrk</code>
+    calls in addition
+    to <code>malloc</code>, <code>calloc</code>, <code>realloc</code>,
+    and <code>new</code>.  <b>NOTE:</b> this causes the profiler to
+    profile calls internal to tcmalloc, since tcmalloc and friends use
+    mmap and sbrk internally for allocations.  One partial solution is
+    to filter these allocations out when running <code>pprof</code>,
+    with something like
+    <code>pprof --ignore='DoAllocWithArena|SbrkSysAllocator::Alloc|MmapSysAllocator::Alloc</code>.
   </td>
 </tr>
 
@@ -358,11 +366,8 @@ interactive mode.</p>
 </ul>
 
 <hr>
-<address>Sanjay Ghemawat<br>
+<address>Sanjay Ghemawat
 <!-- Created: Tue Dec 19 10:43:14 PST 2000 -->
-<!-- hhmts start -->
-Last modified: Sat Feb 24 14:33:15 PST 2007  (csilvers)
-<!-- hhmts end -->
 </address>
 </body>
 </html>

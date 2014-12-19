@@ -41,14 +41,14 @@
 #include <unistd.h>                 // for fork()
 #endif
 #include <sys/wait.h>               // for wait()
-#include "google/profiler.h"
+#include "gperftools/profiler.h"
 #include "base/simple_mutex.h"
 #include "tests/testutil.h"
 
 static int result = 0;
 static int g_iters = 0;   // argv[1]
 
-Mutex mutex;
+Mutex mutex(Mutex::LINKER_INITIALIZED);
 
 static void test_other_thread() {
 #ifndef NO_THREADS
@@ -56,13 +56,12 @@ static void test_other_thread() {
 
   int i, m;
   char b[128];
+  MutexLock ml(&mutex);
   for (m = 0; m < 1000000; ++m) {          // run millions of times
     for (i = 0; i < g_iters; ++i ) {
-      MutexLock ml(&mutex);
       result ^= i;
     }
-    MutexLock ml(&mutex);
-    snprintf(b, sizeof(b), "%d", result);  // get some libc action
+    snprintf(b, sizeof(b), "other: %d", result);  // get some libc action
   }
 #endif
 }
@@ -70,13 +69,12 @@ static void test_other_thread() {
 static void test_main_thread() {
   int i, m;
   char b[128];
+  MutexLock ml(&mutex);
   for (m = 0; m < 1000000; ++m) {          // run millions of times
     for (i = 0; i < g_iters; ++i ) {
-      MutexLock ml(&mutex);
       result ^= i;
     }
-    MutexLock ml(&mutex);
-    snprintf(b, sizeof(b), "%d", result);  // get some libc action
+    snprintf(b, sizeof(b), "same: %d", result);  // get some libc action
   }
 }
 

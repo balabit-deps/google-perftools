@@ -26,11 +26,12 @@
 // THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-//
-// ---
-// Author: Mike Burrows
 
-#include "config.h"
+#include <config.h>
+#if (defined(_WIN32) || defined(__MINGW32__)) && !defined(__CYGWIN__) && !defined(__CYGWIN32)
+# define PLATFORM_WINDOWS 1
+#endif
+
 #include <stdlib.h>   // for getenv()
 #include <stdio.h>    // for snprintf(), sscanf()
 #include <string.h>   // for memmove(), memchr(), etc.
@@ -48,17 +49,18 @@
 #include <sys/sysctl.h>
 #elif defined __sun__         // Solaris
 #include <procfs.h>           // for, e.g., prmap_t
-#elif defined WIN32           // Windows
+#elif defined(PLATFORM_WINDOWS)
 #include <process.h>          // for getpid() (actually, _getpid())
 #include <shlwapi.h>          // for SHGetValueA()
 #include <tlhelp32.h>         // for Module32First()
 #endif
 #include "base/sysinfo.h"
 #include "base/commandlineflags.h"
+#include "base/dynamic_annotations.h"   // for RunningOnValgrind
 #include "base/logging.h"
 #include "base/cycleclock.h"
 
-#ifdef WIN32
+#ifdef PLATFORM_WINDOWS
 #ifdef MODULEENTRY32
 // In a change from the usual W-A pattern, there is no A variant of
 // MODULEENTRY32.  Tlhelp32.h #defines the W variant, but not the A.
@@ -75,7 +77,7 @@
 #ifndef TH32CS_SNAPMODULE32
 #define TH32CS_SNAPMODULE32  0
 #endif  /* TH32CS_SNAPMODULE32 */
-#endif  /* WIN32 */
+#endif  /* PLATFORM_WINDOWS */
 
 // Re-run fn until it doesn't cause EINTR.
 #define NO_INTR(fn)  do {} while ((fn) < 0 && errno == EINTR)
@@ -84,12 +86,20 @@
 // time, so prefer making the syscalls directly if we can.
 #ifdef HAVE_SYS_SYSCALL_H
 # include <sys/syscall.h>
+#endif
+#ifdef SYS_open   // solaris 11, at least sometimes, only defines SYS_openat
 # define safeopen(filename, mode)  syscall(SYS_open, filename, mode)
-# define saferead(fd, buffer, size)  syscall(SYS_read, fd, buffer, size)
-# define safeclose(fd)  syscall(SYS_close, fd)
 #else
 # define safeopen(filename, mode)  open(filename, mode)
+#endif
+#ifdef SYS_read
+# define saferead(fd, buffer, size)  syscall(SYS_read, fd, buffer, size)
+#else
 # define saferead(fd, buffer, size)  read(fd, buffer, size)
+#endif
+#ifdef SYS_close
+# define safeclose(fd)  syscall(SYS_close, fd)
+#else
 # define safeclose(fd)  close(fd)
 #endif
 
@@ -99,7 +109,33 @@
 //    Some non-trivial getenv-related functions.
 // ----------------------------------------------------------------------
 
+// It's not safe to call getenv() in the malloc hooks, because they
+// might be called extremely early, before libc is done setting up
+// correctly.  In particular, the thread library may not be done
+// setting up errno.  So instead, we use the built-in __environ array
+// if it exists, and otherwise read /proc/self/environ directly, using
+// system calls to read the file, and thus avoid setting errno.
+// /proc/self/environ has a limit of how much data it exports (around
+// 8K), so it's not an ideal solution.
 const char* GetenvBeforeMain(const char* name) {
+#if defined(HAVE___ENVIRON)   // if we have it, it's declared in unistd.h
+  if (__environ) {            // can exist but be NULL, if statically linked
+    const int namelen = strlen(name);
+    for (char** p = __environ; *p; p++) {
+      if (!memcmp(*p, name, namelen) && (*p)[namelen] == '=')  // it's a match
+        return *p + namelen+1;                                 // point after =
+    }
+    return NULL;
+  }
+#endif
+#if defined(PLATFORM_WINDOWS)
+  // TODO(mbelshe) - repeated calls to this function will overwrite the
+  // contents of the static buffer.
+  static char envvar_buf[1024];  // enough to hold any envvar we care about
+  if (!GetEnvironmentVariableA(name, envvar_buf, sizeof(envvar_buf)-1))
+    return NULL;
+  return envvar_buf;
+#endif
   // static is ok because this function should only be called before
   // main(), when we're single-threaded.
   static char envbuf[16<<10];
@@ -176,8 +212,8 @@ bool GetUniquePathFromEnv(const char* env_name, char* path) {
 static double cpuinfo_cycles_per_second = 1.0;  // 0.0 might be dangerous
 static int cpuinfo_num_cpus = 1;  // Conservative guess
 
-static void SleepForMilliseconds(int milliseconds) {
-#ifdef WIN32
+void SleepForMilliseconds(int milliseconds) {
+#ifdef PLATFORM_WINDOWS
   _sleep(milliseconds);   // Windows's _sleep takes milliseconds argument
 #else
   // Sleep for a few milliseconds
@@ -203,6 +239,29 @@ static int64 EstimateCyclesPerSecond(const int estimate_time_ms) {
   return guess;
 }
 
+// ReadIntFromFile is only called on linux and cygwin platforms.
+#if defined(__linux__) || defined(__CYGWIN__) || defined(__CYGWIN32__)
+// Helper function for reading an int from a file. Returns true if successful
+// and the memory location pointed to by value is set to the value read.
+static bool ReadIntFromFile(const char *file, int *value) {
+  bool ret = false;
+  int fd = open(file, O_RDONLY);
+  if (fd != -1) {
+    char line[1024];
+    char* err;
+    memset(line, '\0', sizeof(line));
+    read(fd, line, sizeof(line) - 1);
+    const int temp_value = strtol(line, &err, 10);
+    if (line[0] != '\0' && (*err == '\n' || *err == '\0')) {
+      *value = temp_value;
+      ret = true;
+    }
+    close(fd);
+  }
+  return ret;
+}
+#endif
+
 // WARNING: logging calls back to InitializeSystemInfo() so it must
 // not invoke any logging code.  Also, InitializeSystemInfo() can be
 // called before main() -- in fact it *must* be since already_called
@@ -215,31 +274,44 @@ static void InitializeSystemInfo() {
   if (already_called)  return;
   already_called = true;
 
-  // I put in a never-called reference to EstimateCyclesPerSecond() here
-  // to silence the compiler for OS's that don't need it
-  if (0) EstimateCyclesPerSecond(0);
+  bool saw_mhz = false;
 
-#if defined __linux__
+  if (RunningOnValgrind()) {
+    // Valgrind may slow the progress of time artificially (--scale-time=N
+    // option). We thus can't rely on CPU Mhz info stored in /sys or /proc
+    // files. Thus, actually measure the cps.
+    cpuinfo_cycles_per_second = EstimateCyclesPerSecond(100);
+    saw_mhz = true;
+  }
+
+#if defined(__linux__) || defined(__CYGWIN__) || defined(__CYGWIN32__)
   char line[1024];
   char* err;
+  int freq;
+
+  // If the kernel is exporting the tsc frequency use that. There are issues
+  // where cpuinfo_max_freq cannot be relied on because the BIOS may be
+  // exporintg an invalid p-state (on x86) or p-states may be used to put the
+  // processor in a new mode (turbo mode). Essentially, those frequencies
+  // cannot always be relied upon. The same reasons apply to /proc/cpuinfo as
+  // well.
+  if (!saw_mhz &&
+      ReadIntFromFile("/sys/devices/system/cpu/cpu0/tsc_freq_khz", &freq)) {
+      // The value is in kHz (as the file name suggests).  For example, on a
+      // 2GHz warpstation, the file contains the value "2000000".
+      cpuinfo_cycles_per_second = freq * 1000.0;
+      saw_mhz = true;
+  }
 
   // If CPU scaling is in effect, we want to use the *maximum* frequency,
   // not whatever CPU speed some random processor happens to be using now.
-  bool saw_mhz = false;
-  const char* pname0 = "/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq";
-  int fd0 = open(pname0, O_RDONLY);
-  if (fd0 != -1) {
-    memset(line, '\0', sizeof(line));
-    read(fd0, line, sizeof(line));
-    const int max_freq = strtol(line, &err, 10);
-    if (line[0] != '\0' && (*err == '\n' || *err == '\0')) {
-      // The value is in kHz.  For example, on a 2GHz machine, the file
-      // contains the value "2000000".  Historically this file contained no
-      // newline, but at some point the kernel started appending a newline.
-      cpuinfo_cycles_per_second = max_freq * 1000.0;
-      saw_mhz = true;
-    }
-    close(fd0);
+  if (!saw_mhz &&
+      ReadIntFromFile("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq",
+                      &freq)) {
+    // The value is in kHz.  For example, on a 2GHz machine, the file
+    // contains the value "2000000".
+    cpuinfo_cycles_per_second = freq * 1000.0;
+    saw_mhz = true;
   }
 
   // Read /proc/cpuinfo for other values, and if there is no cpuinfo_max_freq.
@@ -247,11 +319,14 @@ static void InitializeSystemInfo() {
   int fd = open(pname, O_RDONLY);
   if (fd == -1) {
     perror(pname);
-    cpuinfo_cycles_per_second = EstimateCyclesPerSecond(1000);
+    if (!saw_mhz) {
+      cpuinfo_cycles_per_second = EstimateCyclesPerSecond(1000);
+    }
     return;          // TODO: use generic tester instead?
   }
 
   double bogo_clock = 1.0;
+  bool saw_bogo = false;
   int num_cpus = 0;
   line[0] = line[1] = '\0';
   int chars_read = 0;
@@ -275,29 +350,38 @@ static void InitializeSystemInfo() {
     if (newline != NULL)
       *newline = '\0';
 
-    if (!saw_mhz && strncmp(line, "cpu MHz", sizeof("cpu MHz")-1) == 0) {
+    // When parsing the "cpu MHz" and "bogomips" (fallback) entries, we only
+    // accept postive values. Some environments (virtual machines) report zero,
+    // which would cause infinite looping in WallTime_Init.
+    if (!saw_mhz && strncasecmp(line, "cpu MHz", sizeof("cpu MHz")-1) == 0) {
       const char* freqstr = strchr(line, ':');
       if (freqstr) {
         cpuinfo_cycles_per_second = strtod(freqstr+1, &err) * 1000000.0;
-        if (freqstr[1] != '\0' && *err == '\0')
+        if (freqstr[1] != '\0' && *err == '\0' && cpuinfo_cycles_per_second > 0)
           saw_mhz = true;
       }
-    } else if (strncmp(line, "bogomips", sizeof("bogomips")-1) == 0) {
+    } else if (strncasecmp(line, "bogomips", sizeof("bogomips")-1) == 0) {
       const char* freqstr = strchr(line, ':');
-      if (freqstr)
+      if (freqstr) {
         bogo_clock = strtod(freqstr+1, &err) * 1000000.0;
-      if (freqstr == NULL || freqstr[1] == '\0' || *err != '\0')
-        bogo_clock = 1.0;
-    } else if (strncmp(line, "processor", sizeof("processor")-1) == 0) {
+        if (freqstr[1] != '\0' && *err == '\0' && bogo_clock > 0)
+          saw_bogo = true;
+      }
+    } else if (strncasecmp(line, "processor", sizeof("processor")-1) == 0) {
       num_cpus++;  // count up every time we see an "processor :" entry
     }
   } while (chars_read > 0);
   close(fd);
 
   if (!saw_mhz) {
-    // If we didn't find anything better, we'll use bogomips, but
-    // we're not happy about it.
-    cpuinfo_cycles_per_second = bogo_clock;
+    if (saw_bogo) {
+      // If we didn't find anything better, we'll use bogomips, but
+      // we're not happy about it.
+      cpuinfo_cycles_per_second = bogo_clock;
+    } else {
+      // If we don't even have bogomips, we'll use the slow estimation.
+      cpuinfo_cycles_per_second = EstimateCyclesPerSecond(1000);
+    }
   }
   if (cpuinfo_cycles_per_second == 0.0) {
     cpuinfo_cycles_per_second = 1.0;   // maybe unnecessary, but safe
@@ -334,7 +418,7 @@ static void InitializeSystemInfo() {
   }
   // TODO(csilvers): also figure out cpuinfo_num_cpus
 
-#elif defined WIN32
+#elif defined(PLATFORM_WINDOWS)
 # pragma comment(lib, "shlwapi.lib")  // for SHGetValue()
   // In NT, read MHz from the registry. If we fail to do so or we're in win9x
   // then make a crude estimate.
@@ -349,7 +433,11 @@ static void InitializeSystemInfo() {
     cpuinfo_cycles_per_second = (int64)data * (int64)(1000 * 1000); // was mhz
   else
     cpuinfo_cycles_per_second = EstimateCyclesPerSecond(500); // TODO <500?
-  // TODO(csilvers): also figure out cpuinfo_num_cpus
+
+  // Get the number of processors.
+  SYSTEM_INFO info;
+  GetSystemInfo(&info);
+  cpuinfo_num_cpus = info.dwNumberOfProcessors;
 
 #elif defined(__MACH__) && defined(__APPLE__)
   // returning "mach time units" per second. the current number of elapsed
@@ -392,13 +480,81 @@ int NumCPUs(void) {
 }
 
 // ----------------------------------------------------------------------
+// HasPosixThreads()
+//      Return true if we're running POSIX (e.g., NPTL on Linux)
+//      threads, as opposed to a non-POSIX thread libary.  The thing
+//      that we care about is whether a thread's pid is the same as
+//      the thread that spawned it.  If so, this function returns
+//      true.
+// ----------------------------------------------------------------------
+bool HasPosixThreads() {
+#if defined(__linux__)
+#ifndef _CS_GNU_LIBPTHREAD_VERSION
+#define _CS_GNU_LIBPTHREAD_VERSION 3
+#endif
+  char buf[32];
+  //  We assume that, if confstr() doesn't know about this name, then
+  //  the same glibc is providing LinuxThreads.
+  if (confstr(_CS_GNU_LIBPTHREAD_VERSION, buf, sizeof(buf)) == 0)
+    return false;
+  return strncmp(buf, "NPTL", 4) == 0;
+#elif defined(PLATFORM_WINDOWS) || defined(__CYGWIN__) || defined(__CYGWIN32__)
+  return false;
+#else  // other OS
+  return true;      //  Assume that everything else has Posix
+#endif  // else OS_LINUX
+}
 
-#if defined __linux__ || defined __FreeBSD__ || defined __sun__
+// ----------------------------------------------------------------------
+
+#if defined __linux__ || defined __FreeBSD__ || defined __sun__ || defined __CYGWIN__ || defined __CYGWIN32__
 static void ConstructFilename(const char* spec, pid_t pid,
                               char* buf, int buf_size) {
   CHECK_LT(snprintf(buf, buf_size,
                     spec,
-                    pid ? pid : getpid()), buf_size);
+                    static_cast<int>(pid ? pid : getpid())), buf_size);
+}
+#endif
+
+// A templatized helper function instantiated for Mach (OS X) only.
+// It can handle finding info for both 32 bits and 64 bits.
+// Returns true if it successfully handled the hdr, false else.
+#ifdef __MACH__          // Mac OS X, almost certainly
+template<uint32_t kMagic, uint32_t kLCSegment,
+         typename MachHeader, typename SegmentCommand>
+static bool NextExtMachHelper(const mach_header* hdr,
+                              int current_image, int current_load_cmd,
+                              uint64 *start, uint64 *end, char **flags,
+                              uint64 *offset, int64 *inode, char **filename,
+                              uint64 *file_mapping, uint64 *file_pages,
+                              uint64 *anon_mapping, uint64 *anon_pages,
+                              dev_t *dev) {
+  static char kDefaultPerms[5] = "r-xp";
+  if (hdr->magic != kMagic)
+    return false;
+  const char* lc = (const char *)hdr + sizeof(MachHeader);
+  // TODO(csilvers): make this not-quadradic (increment and hold state)
+  for (int j = 0; j < current_load_cmd; j++)  // advance to *our* load_cmd
+    lc += ((const load_command *)lc)->cmdsize;
+  if (((const load_command *)lc)->cmd == kLCSegment) {
+    const intptr_t dlloff = _dyld_get_image_vmaddr_slide(current_image);
+    const SegmentCommand* sc = (const SegmentCommand *)lc;
+    if (start) *start = sc->vmaddr + dlloff;
+    if (end) *end = sc->vmaddr + sc->vmsize + dlloff;
+    if (flags) *flags = kDefaultPerms;  // can we do better?
+    if (offset) *offset = sc->fileoff;
+    if (inode) *inode = 0;
+    if (filename)
+      *filename = const_cast<char*>(_dyld_get_image_name(current_image));
+    if (file_mapping) *file_mapping = 0;
+    if (file_pages) *file_pages = 0;   // could we use sc->filesize?
+    if (anon_mapping) *anon_mapping = 0;
+    if (anon_pages) *anon_pages = 0;
+    if (dev) *dev = 0;
+    return true;
+  }
+
+  return false;
 }
 #endif
 
@@ -417,6 +573,7 @@ ProcMapsIterator::ProcMapsIterator(pid_t pid, Buffer *buffer,
 
 void ProcMapsIterator::Init(pid_t pid, Buffer *buffer,
                             bool use_maps_backing) {
+  pid_ = pid;
   using_maps_backing_ = use_maps_backing;
   dynamic_buffer_ = NULL;
   if (!buffer) {
@@ -434,7 +591,7 @@ void ProcMapsIterator::Init(pid_t pid, Buffer *buffer,
   ebuf_ = ibuf_ + Buffer::kBufSize - 1;
   nextline_ = ibuf_;
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(__CYGWIN__) || defined(__CYGWIN32__)
   if (use_maps_backing) {  // don't bother with clever "self" stuff in this case
     ConstructFilename("/proc/%d/maps_backing", pid, ibuf_, Buffer::kBufSize);
   } else if (pid == 0) {
@@ -466,7 +623,7 @@ void ProcMapsIterator::Init(pid_t pid, Buffer *buffer,
 #elif defined(__MACH__)
   current_image_ = _dyld_image_count();   // count down from the top
   current_load_cmd_ = -1;
-#elif defined(WIN32)
+#elif defined(PLATFORM_WINDOWS)
   snapshot_ = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE |
                                        TH32CS_SNAPMODULE32,
                                        GetCurrentProcessId());
@@ -478,8 +635,7 @@ void ProcMapsIterator::Init(pid_t pid, Buffer *buffer,
 }
 
 ProcMapsIterator::~ProcMapsIterator() {
-  delete dynamic_buffer_;
-#if defined(WIN32)
+#if defined(PLATFORM_WINDOWS)
   if (snapshot_ != INVALID_HANDLE_VALUE) CloseHandle(snapshot_);
 #elif defined(__MACH__)
   // no cleanup necessary!
@@ -490,7 +646,7 @@ ProcMapsIterator::~ProcMapsIterator() {
 }
 
 bool ProcMapsIterator::Valid() const {
-#if defined(WIN32)
+#if defined(PLATFORM_WINDOWS)
   return snapshot_ != INVALID_HANDLE_VALUE;
 #elif defined(__MACH__)
   return 1;
@@ -514,7 +670,7 @@ bool ProcMapsIterator::NextExt(uint64 *start, uint64 *end, char **flags,
                                uint64 *anon_mapping, uint64 *anon_pages,
                                dev_t *dev) {
 
-#if defined(__linux__) || defined(__FreeBSD__)
+#if defined(__linux__) || defined(__FreeBSD__) || defined(__CYGWIN__) || defined(__CYGWIN32__)
   do {
     // Advance to the start of the next line
     stext_ = nextline_;
@@ -554,12 +710,31 @@ bool ProcMapsIterator::NextExt(uint64 *start, uint64 *end, char **flags,
     int64 tmpinode;
     int major, minor;
     unsigned filename_offset = 0;
-#if defined(__linux__)  // for now, assume all linuxes have the same format
+#if defined(__linux__)
+    // for now, assume all linuxes have the same format
     if (sscanf(stext_, "%"SCNx64"-%"SCNx64" %4s %"SCNx64" %x:%x %"SCNd64" %n",
                start ? start : &tmpstart,
                end ? end : &tmpend,
                flags_,
                offset ? offset : &tmpoffset,
+               &major, &minor,
+               inode ? inode : &tmpinode, &filename_offset) != 7) continue;
+#elif defined(__CYGWIN__) || defined(__CYGWIN32__)
+    // cygwin is like linux, except the third field is the "entry point"
+    // rather than the offset (see format_process_maps at
+    // http://cygwin.com/cgi-bin/cvsweb.cgi/src/winsup/cygwin/fhandler_process.cc?rev=1.89&content-type=text/x-cvsweb-markup&cvsroot=src
+    // Offset is always be 0 on cygwin: cygwin implements an mmap
+    // by loading the whole file and then calling NtMapViewOfSection.
+    // Cygwin also seems to set its flags kinda randomly; use windows default.
+    char tmpflags[5];
+    if (offset)
+      *offset = 0;
+    strcpy(flags_, "r-xp");
+    if (sscanf(stext_, "%llx-%llx %4s %llx %x:%x %lld %n",
+               start ? start : &tmpstart,
+               end ? end : &tmpend,
+               tmpflags,
+               &tmpoffset,
                &major, &minor,
                inode ? inode : &tmpinode, &filename_offset) != 7) continue;
 #elif defined(__FreeBSD__)
@@ -634,6 +809,7 @@ bool ProcMapsIterator::NextExt(uint64 *start, uint64 *end, char **flags,
   COMPILE_ASSERT(MA_READ == 4, solaris_ma_read_must_equal_4);
   COMPILE_ASSERT(MA_WRITE == 2, solaris_ma_write_must_equal_2);
   COMPILE_ASSERT(MA_EXEC == 1, solaris_ma_exec_must_equal_1);
+  Buffer object_path;
   int nread = 0;            // fill up buffer with text
   NO_INTR(nread = read(fd_, ibuf_, sizeof(prmap_t)));
   if (nread == sizeof(prmap_t)) {
@@ -643,13 +819,28 @@ bool ProcMapsIterator::NextExt(uint64 *start, uint64 *end, char **flags,
     // two middle ints are major and minor device numbers, but I'm not sure.
     sscanf(mapinfo->pr_mapname, "ufs.%*d.%*d.%ld", &inode_from_mapname);
 
+    if (pid_ == 0) {
+      CHECK_LT(snprintf(object_path.buf_, Buffer::kBufSize,
+                        "/proc/self/path/%s", mapinfo->pr_mapname),
+               Buffer::kBufSize);
+    } else {
+      CHECK_LT(snprintf(object_path.buf_, Buffer::kBufSize,
+                        "/proc/%d/path/%s",
+                        static_cast<int>(pid_), mapinfo->pr_mapname),
+               Buffer::kBufSize);
+    }
+    ssize_t len = readlink(object_path.buf_, current_filename_, PATH_MAX);
+    CHECK_LT(len, PATH_MAX);
+    if (len < 0)
+      len = 0;
+    current_filename_[len] = '\0';
+
     if (start) *start = mapinfo->pr_vaddr;
     if (end) *end = mapinfo->pr_vaddr + mapinfo->pr_size;
     if (flags) *flags = kPerms[mapinfo->pr_mflags & 7];
     if (offset) *offset = mapinfo->pr_offset;
     if (inode) *inode = inode_from_mapname;
-    // TODO(csilvers): How to map from /proc/map/object to filename?
-    if (filename) *filename = mapinfo->pr_mapname;  // format is ufs.?.?.inode
+    if (filename) *filename = current_filename_;
     if (file_mapping) *file_mapping = 0;
     if (file_pages) *file_pages = 0;
     if (anon_mapping) *anon_mapping = 0;
@@ -658,7 +849,6 @@ bool ProcMapsIterator::NextExt(uint64 *start, uint64 *end, char **flags,
     return true;
   }
 #elif defined(__MACH__)
-  static char kDefaultPerms[5] = "r-xp";
   // We return a separate entry for each segment in the DLL. (TODO(csilvers):
   // can we do better?)  A DLL ("image") has load-commands, some of which
   // talk about segment boundaries.
@@ -671,32 +861,29 @@ bool ProcMapsIterator::NextExt(uint64 *start, uint64 *end, char **flags,
 
     // We start with the next load command (we've already looked at this one).
     for (current_load_cmd_--; current_load_cmd_ >= 0; current_load_cmd_--) {
-      const char* lc = ((const char *)hdr + sizeof(struct mach_header));
-      // TODO(csilvers): make this not-quadradic (increment and hold state)
-      for (int j = 0; j < current_load_cmd_; j++)  // advance to *our* load_cmd
-        lc += ((const load_command *)lc)->cmdsize;
-      if (((const load_command *)lc)->cmd == LC_SEGMENT) {
-        const intptr_t dlloff = _dyld_get_image_vmaddr_slide(current_image_);
-        const segment_command* sc = (const segment_command *)lc;
-        if (start) *start = sc->vmaddr + dlloff;
-        if (end) *end = sc->vmaddr + sc->vmsize + dlloff;
-        if (flags) *flags = kDefaultPerms;  // can we do better?
-        if (offset) *offset = sc->fileoff;
-        if (inode) *inode = 0;
-        if (filename)
-          *filename = const_cast<char*>(_dyld_get_image_name(current_image_));
-        if (file_mapping) *file_mapping = 0;
-        if (file_pages) *file_pages = 0;   // could we use sc->filesize?
-        if (anon_mapping) *anon_mapping = 0;
-        if (anon_pages) *anon_pages = 0;
-        if (dev) *dev = 0;
+#ifdef MH_MAGIC_64
+      if (NextExtMachHelper<MH_MAGIC_64, LC_SEGMENT_64,
+                            struct mach_header_64, struct segment_command_64>(
+                                hdr, current_image_, current_load_cmd_,
+                                start, end, flags, offset, inode, filename,
+                                file_mapping, file_pages, anon_mapping,
+                                anon_pages, dev)) {
+        return true;
+      }
+#endif
+      if (NextExtMachHelper<MH_MAGIC, LC_SEGMENT,
+                            struct mach_header, struct segment_command>(
+                                hdr, current_image_, current_load_cmd_,
+                                start, end, flags, offset, inode, filename,
+                                file_mapping, file_pages, anon_mapping,
+                                anon_pages, dev)) {
         return true;
       }
     }
     // If we get here, no more load_cmd's in this image talk about
     // segments.  Go on to the next image.
   }
-#elif defined(WIN32)
+#elif defined(PLATFORM_WINDOWS)
   static char kDefaultPerms[5] = "r-xp";
   BOOL ok;
   if (module_.dwSize == 0) {  // only possible before first call
@@ -745,3 +932,54 @@ int ProcMapsIterator::FormatLine(char* buffer, int bufsize,
                           inode, filename);
   return (rc < 0 || rc >= bufsize) ? 0 : rc;
 }
+
+namespace tcmalloc {
+
+// Helper to add the list of mapped shared libraries to a profile.
+// Fill formatted "/proc/self/maps" contents into buffer 'buf' of size 'size'
+// and return the actual size occupied in 'buf'.  We fill wrote_all to true
+// if we successfully wrote all proc lines to buf, false else.
+// We do not provision for 0-terminating 'buf'.
+int FillProcSelfMaps(char buf[], int size, bool* wrote_all) {
+  ProcMapsIterator::Buffer iterbuf;
+  ProcMapsIterator it(0, &iterbuf);   // 0 means "current pid"
+
+  uint64 start, end, offset;
+  int64 inode;
+  char *flags, *filename;
+  int bytes_written = 0;
+  *wrote_all = true;
+  while (it.Next(&start, &end, &flags, &offset, &inode, &filename)) {
+    const int line_length = it.FormatLine(buf + bytes_written,
+                                          size - bytes_written,
+                                          start, end, flags, offset,
+                                          inode, filename, 0);
+    if (line_length == 0)
+      *wrote_all = false;     // failed to write this line out
+    else
+      bytes_written += line_length;
+
+  }
+  return bytes_written;
+}
+
+// Dump the same data as FillProcSelfMaps reads to fd.
+// It seems easier to repeat parts of FillProcSelfMaps here than to
+// reuse it via a call.
+void DumpProcSelfMaps(RawFD fd) {
+  ProcMapsIterator::Buffer iterbuf;
+  ProcMapsIterator it(0, &iterbuf);   // 0 means "current pid"
+
+  uint64 start, end, offset;
+  int64 inode;
+  char *flags, *filename;
+  ProcMapsIterator::Buffer linebuf;
+  while (it.Next(&start, &end, &flags, &offset, &inode, &filename)) {
+    int written = it.FormatLine(linebuf.buf_, sizeof(linebuf.buf_),
+                                start, end, flags, offset, inode, filename,
+                                0);
+    RawWrite(fd, linebuf.buf_, written);
+  }
+}
+
+}  // namespace tcmalloc
