@@ -1,3 +1,4 @@
+// -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
 /* Copyright (c) 2005, Google Inc.
  * All rights reserved.
  * 
@@ -39,7 +40,7 @@
  * using one of the following methods:
  *
  *    1. Before starting the program, set the environment variable
- *       "PROFILE" to be the name of the file to which the profile
+ *       "CPUPROFILE" to be the name of the file to which the profile
  *       data should be written.
  *
  *    2. Programmatically, start and stop the profiler using the
@@ -123,7 +124,7 @@ PERFTOOLS_DLL_DECL int ProfilerStart(const char* fname);
  *
  * 'options' may be NULL, in which case all are given default values.
  *
- * Returns nonzero if profiling was started sucessfully, or zero else.
+ * Returns nonzero if profiling was started successfully, or zero else.
  */
 PERFTOOLS_DLL_DECL int ProfilerStartWithOptions(
     const char *fname, const struct ProfilerOptions *options);

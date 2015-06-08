@@ -1,3 +1,4 @@
+// -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
 /* Copyright (c) 2003, Google Inc.
  * All rights reserved.
  * 
@@ -53,7 +54,17 @@
 #define TC_VERSION_PATCH  "@TC_VERSION_PATCH@"
 #define TC_VERSION_STRING "gperftools @TC_VERSION_MAJOR@.@TC_VERSION_MINOR@@TC_VERSION_PATCH@"
 
-#include <stdlib.h>   // for struct mallinfo, if it's defined
+// For struct mallinfo, if it's defined.
+#ifdef HAVE_STRUCT_MALLINFO
+// Malloc can be in several places on older versions of OS X.
+# if defined(HAVE_MALLOC_H)
+# include <malloc.h>
+# elif defined(HAVE_SYS_MALLOC_H)
+# include <sys/malloc.h>
+# elif defined(HAVE_MALLOC_MALLOC_H)
+# include <malloc/malloc.h>
+# endif
+#endif
 
 // Annoying stuff for windows -- makes sure clients can import these functions
 #ifndef PERFTOOLS_DLL_DECL
@@ -78,6 +89,7 @@ extern "C" {
                                             const char** patch) __THROW;
 
   PERFTOOLS_DLL_DECL void* tc_malloc(size_t size) __THROW;
+  PERFTOOLS_DLL_DECL void* tc_malloc_skip_new_handler(size_t size) __THROW;
   PERFTOOLS_DLL_DECL void tc_free(void* ptr) __THROW;
   PERFTOOLS_DLL_DECL void* tc_realloc(void* ptr, size_t size) __THROW;
   PERFTOOLS_DLL_DECL void* tc_calloc(size_t nmemb, size_t size) __THROW;

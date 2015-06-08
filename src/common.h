@@ -1,10 +1,11 @@
+// -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
 // Copyright (c) 2008, Google Inc.
 // All rights reserved.
-// 
+//
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
-// 
+//
 //     * Redistributions of source code must retain the above copyright
 // notice, this list of conditions and the following disclaimer.
 //     * Redistributions in binary form must reproduce the above
@@ -14,7 +15,7 @@
 //     * Neither the name of Google Inc. nor the names of its
 // contributors may be used to endorse or promote products derived from
 // this software without specific prior written permission.
-// 
+//
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
 // "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
 // LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
@@ -41,6 +42,15 @@
 #include <stdint.h>                     // for uintptr_t, uint64_t
 #endif
 #include "internal_logging.h"  // for ASSERT, etc
+#include "base/basictypes.h"   // for LIKELY, etc
+
+#ifdef HAVE_BUILTIN_EXPECT
+#define LIKELY(x) __builtin_expect(!!(x), 1)
+#define UNLIKELY(x) __builtin_expect(!!(x), 0)
+#else
+#define LIKELY(x) (x)
+#define UNLIKELY(x) (x)
+#endif
 
 // Type that can hold a page number
 typedef uintptr_t PageID;
@@ -52,6 +62,19 @@ typedef uintptr_t Length;
 // Configuration
 //-------------------------------------------------------------------
 
+#if defined(TCMALLOC_ALIGN_8BYTES)
+// Unless we force to use 8 bytes alignment we use an alignment of
+// at least 16 bytes to statisfy requirements for some SSE types.
+// Keep in mind when using the 16 bytes alignment you can have a space
+// waste due alignment of 25%. (eg malloc of 24 bytes will get 32 bytes)
+static const size_t kMinAlign   = 8;
+// Number of classes created until reach page size 128.
+static const size_t kBaseClasses = 16;
+#else
+static const size_t kMinAlign   = 16;
+static const size_t kBaseClasses = 9;
+#endif
+
 // Using large pages speeds up the execution at a cost of larger memory use.
 // Deallocation may speed up by a factor as the page map gets 8x smaller, so
 // lookups in the page map result in fewer L2 cache misses, which translates to
@@ -60,14 +83,17 @@ typedef uintptr_t Length;
 // the thread cache allowance to avoid passing more free ranges to and from
 // central lists.  Also, larger pages are less likely to get freed.
 // These two factors cause a bounded increase in memory use.
-
-#if defined(TCMALLOC_LARGE_PAGES)
+#if defined(TCMALLOC_32K_PAGES)
 static const size_t kPageShift  = 15;
-static const size_t kNumClasses = 78;
+static const size_t kNumClasses = kBaseClasses + 69;
+#elif defined(TCMALLOC_64K_PAGES)
+static const size_t kPageShift  = 16;
+static const size_t kNumClasses = kBaseClasses + 73;
 #else
 static const size_t kPageShift  = 13;
-static const size_t kNumClasses = 86;
+static const size_t kNumClasses = kBaseClasses + 79;
 #endif
+
 static const size_t kMaxThreadCacheSize = 4 << 20;
 
 static const size_t kPageSize   = 1 << kPageShift;
@@ -169,13 +195,15 @@ class SizeMap {
   unsigned char class_array_[kClassArraySize];
 
   // Compute index of the class_array[] entry for a given size
-  static inline int ClassIndex(int s) {
+  static inline size_t ClassIndex(int s) {
+    // Use unsigned arithmetic to avoid unnecessary sign extensions.
     ASSERT(0 <= s);
     ASSERT(s <= kMaxSize);
-    const bool big = (s > kMaxSmallSize);
-    const int add_amount = big ? (127 + (120<<7)) : 7;
-    const int shift_amount = big ? 7 : 3;
-    return (s + add_amount) >> shift_amount;
+    if (LIKELY(s <= kMaxSmallSize)) {
+      return (static_cast<uint32_t>(s) + 7) >> 3;
+    } else {
+      return (static_cast<uint32_t>(s) + 127 + (120 << 7)) >> 7;
+    }
   }
 
   int NumMoveSize(size_t size);

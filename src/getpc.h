@@ -1,3 +1,4 @@
+// -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
 // Copyright (c) 2005, Google Inc.
 // All rights reserved.
 //
@@ -94,7 +95,7 @@ struct CallUnrollInfo {
   int pc_offset;
   // The actual instruction bytes. Feel free to make it larger if you
   // need a longer sequence.
-  char ins[16];
+  unsigned char ins[16];
   // How many bytes to match from ins array?
   int ins_size;
   // The offset from the stack pointer (e)sp where to look for the

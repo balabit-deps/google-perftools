@@ -1,3 +1,4 @@
+// -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
 // Copyright (c) 2005, Google Inc.
 // All rights reserved.
 //
@@ -92,6 +93,7 @@
 #include "gperftools/malloc_extension.h"
 #include "gperftools/tcmalloc.h"
 #include "thread_cache.h"
+#include "system-alloc.h"
 #include "tests/testutil.h"
 
 // Windows doesn't define pvalloc and a few other obsolete unix
@@ -579,7 +581,7 @@ static void TestHugeAllocations(AllocatorState* rnd) {
 static void TestCalloc(size_t n, size_t s, bool ok) {
   char* p = reinterpret_cast<char*>(calloc(n, s));
   if (FLAGS_verbose)
-    fprintf(LOGSTREAM, "calloc(%"PRIxS", %"PRIxS"): %p\n", n, s, p);
+    fprintf(LOGSTREAM, "calloc(%" PRIxS ", %" PRIxS "): %p\n", n, s, p);
   if (!ok) {
     CHECK(p == NULL);  // calloc(n, s) should not succeed
   } else {
@@ -724,7 +726,7 @@ static void TestNothrowNew(void* (*func)(size_t, const std::nothrow_t&)) {
 // Note the ... in the hook signature: we don't care what arguments
 // the hook takes.
 #define MAKE_HOOK_CALLBACK(hook_type)                                   \
-  static int g_##hook_type##_calls = 0;                                 \
+  static volatile int g_##hook_type##_calls = 0;                                 \
   static void IncrementCallsTo##hook_type(...) {                        \
     g_##hook_type##_calls++;                                            \
   }                                                                     \
@@ -759,9 +761,10 @@ static void TestAlignmentForSize(int size) {
     CHECK((p % sizeof(void*)) == 0);
     CHECK((p % sizeof(double)) == 0);
 
-    // Must have 16-byte alignment for large enough objects
-    if (size >= 16) {
-      CHECK((p % 16) == 0);
+    // Must have 16-byte (or 8-byte in case of -DTCMALLOC_ALIGN_8BYTES)
+    // alignment for large enough objects
+    if (size >= kMinAlign) {
+      CHECK((p % kMinAlign) == 0);
     }
   }
   for (int i = 0; i < kNum; i++) {
@@ -834,20 +837,26 @@ static void CheckRangeCallback(void* ptr, base::MallocRange::Type type,
 
 }
 
+static bool HaveSystemRelease =
+    TCMalloc_SystemRelease(TCMalloc_SystemAlloc(kPageSize, NULL, 0), kPageSize);
+
 static void TestRanges() {
   static const int MB = 1048576;
   void* a = malloc(MB);
   void* b = malloc(MB);
+  base::MallocRange::Type releasedType =
+      HaveSystemRelease ? base::MallocRange::UNMAPPED : base::MallocRange::FREE;
+
   CheckRangeCallback(a, base::MallocRange::INUSE, MB);
   CheckRangeCallback(b, base::MallocRange::INUSE, MB);
   free(a);
   CheckRangeCallback(a, base::MallocRange::FREE, MB);
   CheckRangeCallback(b, base::MallocRange::INUSE, MB);
   MallocExtension::instance()->ReleaseFreeMemory();
-  CheckRangeCallback(a, base::MallocRange::UNMAPPED, MB);
+  CheckRangeCallback(a, releasedType, MB);
   CheckRangeCallback(b, base::MallocRange::INUSE, MB);
   free(b);
-  CheckRangeCallback(a, base::MallocRange::UNMAPPED, MB);
+  CheckRangeCallback(a, releasedType, MB);
   CheckRangeCallback(b, base::MallocRange::FREE, MB);
 }
 
@@ -860,13 +869,35 @@ static size_t GetUnmappedBytes() {
 }
 #endif
 
+class AggressiveDecommitChanger {
+  size_t old_value_;
+public:
+  AggressiveDecommitChanger(size_t new_value) {
+    MallocExtension *inst = MallocExtension::instance();
+    bool rv = inst->GetNumericProperty("tcmalloc.aggressive_memory_decommit", &old_value_);
+    CHECK_CONDITION(rv);
+    rv = inst->SetNumericProperty("tcmalloc.aggressive_memory_decommit", new_value);
+    CHECK_CONDITION(rv);
+  }
+  ~AggressiveDecommitChanger() {
+    MallocExtension *inst = MallocExtension::instance();
+    bool rv = inst->SetNumericProperty("tcmalloc.aggressive_memory_decommit", old_value_);
+    CHECK_CONDITION(rv);
+  }
+};
+
 static void TestReleaseToSystem() {
   // Debug allocation mode adds overhead to each allocation which
   // messes up all the equality tests here.  I just disable the
   // teset in this mode.  TODO(csilvers): get it to work for debugalloc?
 #ifndef DEBUGALLOCATION
+
+  if(!HaveSystemRelease) return;
+
   const double old_tcmalloc_release_rate = FLAGS_tcmalloc_release_rate;
   FLAGS_tcmalloc_release_rate = 0;
+
+  AggressiveDecommitChanger disabler(0);
 
   static const int MB = 1048576;
   void* a = malloc(MB);
@@ -915,6 +946,51 @@ static void TestReleaseToSystem() {
   EXPECT_EQ(starting_bytes + 2*MB, GetUnmappedBytes());
 
   FLAGS_tcmalloc_release_rate = old_tcmalloc_release_rate;
+#endif   // #ifndef DEBUGALLOCATION
+}
+
+static void TestAggressiveDecommit() {
+  // Debug allocation mode adds overhead to each allocation which
+  // messes up all the equality tests here.  I just disable the
+  // teset in this mode.
+#ifndef DEBUGALLOCATION
+
+  if(!HaveSystemRelease) return;
+
+  fprintf(LOGSTREAM, "Testing aggressive de-commit\n");
+
+  AggressiveDecommitChanger enabler(1);
+
+  static const int MB = 1048576;
+  void* a = malloc(MB);
+  void* b = malloc(MB);
+
+  size_t starting_bytes = GetUnmappedBytes();
+
+  // ReleaseToSystem shouldn't do anything either.
+  MallocExtension::instance()->ReleaseToSystem(MB);
+  EXPECT_EQ(starting_bytes, GetUnmappedBytes());
+
+  free(a);
+
+  // The span to release should be 1MB.
+  EXPECT_EQ(starting_bytes + MB, GetUnmappedBytes());
+
+  free(b);
+
+  EXPECT_EQ(starting_bytes + 2*MB, GetUnmappedBytes());
+
+  // Nothing else to release.
+  MallocExtension::instance()->ReleaseFreeMemory();
+  EXPECT_EQ(starting_bytes + 2*MB, GetUnmappedBytes());
+
+  a = malloc(MB);
+  free(a);
+
+  EXPECT_EQ(starting_bytes + 2*MB, GetUnmappedBytes());
+
+  fprintf(LOGSTREAM, "Done testing aggressive de-commit\n");
+
 #endif   // #ifndef DEBUGALLOCATION
 }
 
@@ -1056,6 +1132,11 @@ static int RunAllTests(int argc, char** argv) {
     free(p1);
     VerifyDeleteHookWasCalled();
 
+    p1 = tc_malloc_skip_new_handler(10);
+    CHECK(p1 != NULL);
+    VerifyNewHookWasCalled();
+    free(p1);
+    VerifyDeleteHookWasCalled();
 
     p1 = calloc(10, 2);
     CHECK(p1 != NULL);
@@ -1296,6 +1377,7 @@ static int RunAllTests(int argc, char** argv) {
   TestHugeThreadCache();
   TestRanges();
   TestReleaseToSystem();
+  TestAggressiveDecommit();
   TestSetNewMode();
 
   return 0;

@@ -1,3 +1,4 @@
+// -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
 // Copyright (c) 2009, Google Inc.
 // All rights reserved.
 // 
@@ -75,9 +76,13 @@ static string* g_pprof_path = new string(FLAGS_symbolize_pprof);
 
 // Returns NULL if we're on an OS where we can't get the invocation name.
 // Using a static var is ok because we're not called from a thread.
-static char* GetProgramInvocationName() {
+static const char* GetProgramInvocationName() {
 #if defined(HAVE_PROGRAM_INVOCATION_NAME)
+#ifdef __UCLIBC__
+  extern const char* program_invocation_name; // uclibc provides this
+#else
   extern char* program_invocation_name;  // gcc provides this
+#endif
   return program_invocation_name;
 #elif defined(__MACH__)
   // We don't want to allocate memory for this since we may be
@@ -151,8 +156,8 @@ int SymbolTable::Symbolize() {
         close(child_fds[j][0]);
         close(child_fds[j][1]);
         PrintError("Cannot create a socket pair");
-        return 0;
       }
+      return 0;
     } else {
       if ((child_fds[i][0] > 2) && (child_fds[i][1] > 2)) {
         if (child_in == NULL) {
@@ -229,7 +234,7 @@ int SymbolTable::Symbolize() {
            iter != symbolization_table_.end(); ++iter) {
         written += snprintf(pprof_buffer + written, kOutBufSize - written,
                  // pprof expects format to be 0xXXXXXX
-                 "0x%"PRIxPTR"\n", reinterpret_cast<uintptr_t>(iter->first));
+                 "0x%" PRIxPTR "\n", reinterpret_cast<uintptr_t>(iter->first));
       }
       write(child_in[1], pprof_buffer, strlen(pprof_buffer));
       close(child_in[1]);             // that's all we need to write

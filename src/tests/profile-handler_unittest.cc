@@ -1,6 +1,11 @@
+// -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
 // Copyright 2009 Google Inc. All Rights Reserved.
 // Author: Nabeel Mian (nabeelmian@google.com)
 //         Chris Demetriou (cgd@google.com)
+//
+// Use of this source code is governed by a BSD-style license that can
+// be found in the LICENSE file.
+//
 //
 // This file contains the unit tests for profile-handler.h interface.
 //
@@ -76,6 +81,7 @@ int kSleepInterval = 200000000;
 int kTimerResetInterval = 5000000;
 
 // Whether each thread has separate timers.
+static bool linux_per_thread_timers_mode_ = false;
 static bool timer_separate_ = false;
 static int timer_type_ = ITIMER_PROF;
 static int signal_number_ = SIGPROF;
@@ -175,7 +181,7 @@ class BusyThread : public Thread {
     while (!stop_work()) {
     }
     // If timers are separate, check that timer is enabled for this thread.
-    EXPECT_TRUE(!timer_separate_ || IsTimerEnabled());
+    EXPECT_TRUE(linux_per_thread_timers_mode_ || !timer_separate_ || IsTimerEnabled());
   }
 };
 
@@ -183,7 +189,7 @@ class NullThread : public Thread {
  private:
   void Run() {
     // If timers are separate, check that timer is enabled for this thread.
-    EXPECT_TRUE(!timer_separate_ || IsTimerEnabled());
+    EXPECT_TRUE(linux_per_thread_timers_mode_ || !timer_separate_ || IsTimerEnabled());
   }
 };
 
@@ -204,6 +210,9 @@ class ProfileHandlerTest {
     signal_number_ = (getenv("CPUPROFILE_REALTIME") ? SIGALRM : SIGPROF);
 
     timer_separate_ = threads_have_separate_timers();
+#if HAVE_LINUX_SIGEV_THREAD_ID
+    linux_per_thread_timers_mode_ = (getenv("CPUPROFILE_PER_THREAD_TIMERS") != NULL);
+#endif
     Delay(kTimerResetInterval);
   }
 
@@ -295,7 +304,7 @@ class ProfileHandlerTest {
     // Check the callback count.
     EXPECT_GT(GetCallbackCount(), 0);
     // Check that the profile timer is enabled.
-    EXPECT_EQ(FLAGS_test_profiler_enabled, IsTimerEnabled());
+    EXPECT_EQ(FLAGS_test_profiler_enabled, linux_per_thread_timers_mode_ || IsTimerEnabled());
     // Check that the signal handler is enabled.
     if (FLAGS_test_profiler_signal_handler) {
       EXPECT_EQ(FLAGS_test_profiler_enabled, IsSignalEnabled());
@@ -327,10 +336,12 @@ class ProfileHandlerTest {
       if (FLAGS_test_profiler_signal_handler) {
         EXPECT_FALSE(IsSignalEnabled());
       }
-      if (timer_separate_) {
-        EXPECT_TRUE(IsTimerEnabled());
-      } else {
-        EXPECT_FALSE(IsTimerEnabled());
+      if (!linux_per_thread_timers_mode_) {
+        if (timer_separate_) {
+          EXPECT_TRUE(IsTimerEnabled());
+        } else {
+          EXPECT_FALSE(IsTimerEnabled());
+        }
       }
     }
   }
@@ -345,10 +356,12 @@ class ProfileHandlerTest {
     // Check that the callback count is 0.
     EXPECT_EQ(0, GetCallbackCount());
     // Check that the timer is disabled if shared, enabled otherwise.
-    if (timer_separate_) {
-      EXPECT_TRUE(IsTimerEnabled());
-    } else {
-      EXPECT_FALSE(IsTimerEnabled());
+    if (!linux_per_thread_timers_mode_) {
+      if (timer_separate_) {
+        EXPECT_TRUE(IsTimerEnabled());
+      } else {
+        EXPECT_FALSE(IsTimerEnabled());
+      }
     }
     // Verify that the ProfileHandler is not accumulating profile ticks.
     uint64 interrupts_before = GetInterruptCount();
@@ -493,7 +506,7 @@ TEST_F(ProfileHandlerTest, RegisterCallbackBeforeThread) {
   // correctly enabled.
   RegisterThread();
   EXPECT_EQ(1, GetCallbackCount());
-  EXPECT_EQ(FLAGS_test_profiler_enabled, IsTimerEnabled());
+  EXPECT_EQ(FLAGS_test_profiler_enabled, linux_per_thread_timers_mode_ || IsTimerEnabled());
   if (FLAGS_test_profiler_signal_handler) {
     EXPECT_EQ(FLAGS_test_profiler_enabled, IsSignalEnabled());
   }

@@ -1,3 +1,4 @@
+// -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
 /* Copyright (c) 2006, Google Inc.
  * All rights reserved.
  * 
@@ -117,7 +118,7 @@ void SpinLock::SlowLock() {
         // the last lock_value observed.
         lock_value = kSpinLockSleeper;
       } else if (lock_value == kSpinLockFree) {
-        // Lock is free again, so try and aquire it before sleeping.  The
+        // Lock is free again, so try and acquire it before sleeping.  The
         // new lock state will be the number of cycles this thread waited if
         // this thread obtains the lock.
         lock_value = base::subtle::Acquire_CompareAndSwap(&lockword_,

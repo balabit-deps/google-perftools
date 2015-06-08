@@ -1,3 +1,4 @@
+// -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
 // Copyright (c) 2005, Google Inc.
 // All rights reserved.
 // 
@@ -71,7 +72,7 @@ struct MallocRange;
 }
 
 // Interface to a pluggable system allocator.
-class SysAllocator {
+class PERFTOOLS_DLL_DECL SysAllocator {
  public:
   SysAllocator() {
   }
@@ -168,6 +169,26 @@ class PERFTOOLS_DLL_DECL MallocExtension {
   // "tcmalloc.current_total_thread_cache_bytes"
   //      Number of bytes used across all thread caches.
   //      This property is not writable.
+  //
+  // "tcmalloc.central_cache_free_bytes"
+  //      Number of free bytes in the central cache that have been
+  //      assigned to size classes. They always count towards virtual
+  //      memory usage, and unless the underlying memory is swapped out
+  //      by the OS, they also count towards physical memory usage.
+  //      This property is not writable.
+  //
+  // "tcmalloc.transfer_cache_free_bytes"
+  //      Number of free bytes that are waiting to be transfered between
+  //      the central cache and a thread cache. They always count
+  //      towards virtual memory usage, and unless the underlying memory
+  //      is swapped out by the OS, they also count towards physical
+  //      memory usage. This property is not writable.
+  //
+  // "tcmalloc.thread_cache_free_bytes"
+  //      Number of free bytes in thread caches. They always count
+  //      towards virtual memory usage, and unless the underlying memory
+  //      is swapped out by the OS, they also count towards physical
+  //      memory usage. This property is not writable.
   //
   // "tcmalloc.pageheap_free_bytes"
   //      Number of bytes in free, mapped pages in page heap.  These
@@ -380,7 +401,7 @@ struct MallocRange {
     INUSE,                // Application is using this range
     FREE,                 // Range is currently free
     UNMAPPED,             // Backing physical memory has been returned to the OS
-    UNKNOWN,
+    UNKNOWN
     // More enum values may be added in the future
   };
 

@@ -1,3 +1,4 @@
+// -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
 // Copyright (c) 2008, Google Inc.
 // All rights reserved.
 //
@@ -81,6 +82,9 @@ class Static {
   static PageHeapAllocator<StackTraceTable::Bucket>* bucket_allocator() {
     return &bucket_allocator_;
   }
+
+  // Check if InitStaticVars() has been run.
+  static bool IsInited() { return pageheap() != NULL; }
 
  private:
   static SpinLock pageheap_lock_;

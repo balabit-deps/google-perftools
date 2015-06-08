@@ -1,3 +1,4 @@
+// -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
 // Copyright (c) 2008, Google Inc.
 // All rights reserved.
 //
@@ -37,19 +38,24 @@
 #include <algorithm>                    // for max, min
 #include "base/commandlineflags.h"      // for SpinLockHolder
 #include "base/spinlock.h"              // for SpinLockHolder
+#include "getenv_safe.h"                // for TCMallocGetenvSafe
 #include "central_freelist.h"           // for CentralFreeListPadded
 #include "maybe_threads.h"
 
 using std::min;
 using std::max;
 
-DEFINE_int64(tcmalloc_max_total_thread_cache_bytes,
-             EnvToInt64("TCMALLOC_MAX_TOTAL_THREAD_CACHE_BYTES",
-                        kDefaultOverallThreadCacheSize),
-             "Bound on the total amount of bytes allocated to "
-             "thread caches. This bound is not strict, so it is possible "
-             "for the cache to go over this bound in certain circumstances. "
-             "Maximum value of this flag is capped to 1 GB.");
+// Note: this is initialized manually in InitModule to ensure that
+// it's configured at right time
+//
+// DEFINE_int64(tcmalloc_max_total_thread_cache_bytes,
+//              EnvToInt64("TCMALLOC_MAX_TOTAL_THREAD_CACHE_BYTES",
+//                         kDefaultOverallThreadCacheSize),
+//              "Bound on the total amount of bytes allocated to "
+//              "thread caches. This bound is not strict, so it is possible "
+//              "for the cache to go over this bound in certain circumstances. "
+//              "Maximum value of this flag is capped to 1 GB.");
+
 
 namespace tcmalloc {
 
@@ -63,54 +69,12 @@ ThreadCache* ThreadCache::thread_heaps_ = NULL;
 int ThreadCache::thread_heap_count_ = 0;
 ThreadCache* ThreadCache::next_memory_steal_ = NULL;
 #ifdef HAVE_TLS
-__thread ThreadCache* ThreadCache::threadlocal_heap_
-# ifdef HAVE___ATTRIBUTE__
-   __attribute__ ((tls_model ("initial-exec")))
-# endif
-   ;
+__thread ThreadCache::ThreadLocalData ThreadCache::threadlocal_data_
+    ATTR_INITIAL_EXEC
+    = {0, 0};
 #endif
 bool ThreadCache::tsd_inited_ = false;
 pthread_key_t ThreadCache::heap_key_;
-
-#if defined(HAVE_TLS)
-bool kernel_supports_tls = false;      // be conservative
-# if defined(_WIN32)    // windows has supported TLS since winnt, I think.
-    void CheckIfKernelSupportsTLS() {
-      kernel_supports_tls = true;
-    }
-# elif !HAVE_DECL_UNAME    // if too old for uname, probably too old for TLS
-    void CheckIfKernelSupportsTLS() {
-      kernel_supports_tls = false;
-    }
-# else
-#   include <sys/utsname.h>    // DECL_UNAME checked for <sys/utsname.h> too
-    void CheckIfKernelSupportsTLS() {
-      struct utsname buf;
-      if (uname(&buf) < 0) {   // should be impossible
-        Log(kLog, __FILE__, __LINE__,
-            "uname failed assuming no TLS support (errno)", errno);
-        kernel_supports_tls = false;
-      } else if (strcasecmp(buf.sysname, "linux") == 0) {
-        // The linux case: the first kernel to support TLS was 2.6.0
-        if (buf.release[0] < '2' && buf.release[1] == '.')    // 0.x or 1.x
-          kernel_supports_tls = false;
-        else if (buf.release[0] == '2' && buf.release[1] == '.' &&
-                 buf.release[2] >= '0' && buf.release[2] < '6' &&
-                 buf.release[3] == '.')                       // 2.0 - 2.5
-          kernel_supports_tls = false;
-        else
-          kernel_supports_tls = true;
-      } else if (strcasecmp(buf.sysname, "CYGWIN_NT-6.1-WOW64") == 0) {
-        // In my testing, this version of cygwin, at least, would hang
-        // when using TLS.
-        kernel_supports_tls = false;
-      } else {        // some other kernel, we'll be optimisitic
-        kernel_supports_tls = true;
-      }
-      // TODO(csilvers): VLOG(1) the tls status once we support RAW_VLOG
-    }
-#  endif  // HAVE_DECL_UNAME
-#endif    // HAVE_TLS
 
 void ThreadCache::Init(pthread_t tid) {
   size_ = 0;
@@ -310,6 +274,10 @@ int ThreadCache::GetSamplePeriod() {
 void ThreadCache::InitModule() {
   SpinLockHolder h(Static::pageheap_lock());
   if (!phinited) {
+    const char *tcb = TCMallocGetenvSafe("TCMALLOC_MAX_TOTAL_THREAD_CACHE_BYTES");
+    if (tcb) {
+      set_overall_thread_cache_size(strtoll(tcb, NULL, 10));
+    }
     Static::InitStaticVars();
     threadcache_allocator.Init();
     phinited = 1;
@@ -379,7 +347,8 @@ ThreadCache* ThreadCache::CreateCacheIfNecessary() {
     perftools_pthread_setspecific(heap_key_, heap);
 #ifdef HAVE_TLS
     // Also keep a copy in __thread for faster retrieval
-    threadlocal_heap_ = heap;
+    threadlocal_data_.heap = heap;
+    SetMinSizeForSlowPath(kMaxSize + 1);
 #endif
     heap->in_setspecific_ = false;
   }
@@ -414,7 +383,8 @@ void ThreadCache::BecomeIdle() {
   perftools_pthread_setspecific(heap_key_, NULL);
 #ifdef HAVE_TLS
   // Also update the copy in __thread
-  threadlocal_heap_ = NULL;
+  threadlocal_data_.heap = NULL;
+  SetMinSizeForSlowPath(0);
 #endif
   heap->in_setspecific_ = false;
   if (GetThreadHeap() == heap) {
@@ -434,7 +404,8 @@ void ThreadCache::DestroyThreadCache(void* ptr) {
   if (ptr == NULL) return;
 #ifdef HAVE_TLS
   // Prevent fast path of GetThreadHeap() from returning heap.
-  threadlocal_heap_ = NULL;
+  threadlocal_data_.heap = NULL;
+  SetMinSizeForSlowPath(0);
 #endif
   DeleteCache(reinterpret_cast<ThreadCache*>(ptr));
 }

@@ -5,6 +5,9 @@
 #define GPERFTOOLS_CONFIG_H_
 
 
+/* Define to 1 if compiler supports __builtin_expect */
+#undef HAVE_BUILTIN_EXPECT
+
 /* Define to 1 if compiler supports __builtin_stack_pointer */
 #undef HAVE_BUILTIN_STACK_POINTER
 
@@ -14,6 +17,10 @@
 /* Define to 1 if you have the <cygwin/signal.h> header file. */
 #undef HAVE_CYGWIN_SIGNAL_H
 
+/* Define to 1 if you have the declaration of `backtrace', and to 0 if you
+   don't. */
+#undef HAVE_DECL_BACKTRACE
+
 /* Define to 1 if you have the declaration of `cfree', and to 0 if you don't.
    */
 #undef HAVE_DECL_CFREE
@@ -22,6 +29,10 @@
    don't. */
 #undef HAVE_DECL_MEMALIGN
 
+/* Define to 1 if you have the declaration of `nanosleep', and to 0 if you
+   don't. */
+#undef HAVE_DECL_NANOSLEEP
+
 /* Define to 1 if you have the declaration of `posix_memalign', and to 0 if
    you don't. */
 #undef HAVE_DECL_POSIX_MEMALIGN
@@ -29,6 +40,10 @@
 /* Define to 1 if you have the declaration of `pvalloc', and to 0 if you
    don't. */
 #undef HAVE_DECL_PVALLOC
+
+/* Define to 1 if you have the declaration of `sleep', and to 0 if you don't.
+   */
+#undef HAVE_DECL_SLEEP
 
 /* Define to 1 if you have the declaration of `uname', and to 0 if you don't.
    */
@@ -53,6 +68,9 @@
 /* Define to 1 if you have the <features.h> header file. */
 #undef HAVE_FEATURES_H
 
+/* Define to 1 if you have the `fork' function. */
+#undef HAVE_FORK
+
 /* Define to 1 if you have the `geteuid' function. */
 #undef HAVE_GETEUID
 
@@ -73,6 +91,9 @@
 
 /* Define to 1 if you have the <linux/ptrace.h> header file. */
 #undef HAVE_LINUX_PTRACE_H
+
+/* Define if this is Linux that has SIGEV_THREAD_ID */
+#undef HAVE_LINUX_SIGEV_THREAD_ID
 
 /* Define to 1 if you have the <malloc.h> header file. */
 #undef HAVE_MALLOC_H
@@ -97,6 +118,10 @@
 
 /* Define if you have POSIX threads libraries and header files. */
 #undef HAVE_PTHREAD
+
+/* defined to 1 if pthread symbols are exposed even without include pthread.h
+   */
+#undef HAVE_PTHREAD_DESPITE_ASKING_FOR
 
 /* Define to 1 if you have the <pwd.h> header file. */
 #undef HAVE_PWD_H
@@ -149,7 +174,7 @@
 /* Define to 1 if you have the <sys/types.h> header file. */
 #undef HAVE_SYS_TYPES_H
 
-/* <sys/ucontext.h> is broken on redhat 7 */
+/* Define to 1 if you have the <sys/ucontext.h> header file. */
 #undef HAVE_SYS_UCONTEXT_H
 
 /* Define to 1 if you have the <sys/wait.h> header file. */
@@ -191,9 +216,6 @@
 
 /* Define to 'volatile' if __malloc_hook is declared volatile */
 #undef MALLOC_HOOK_MAYBE_VOLATILE
-
-/* Define to 1 if your C compiler doesn't accept -c and -o together. */
-#undef NO_MINUS_C_MINUS_O
 
 /* Name of package */
 #undef PACKAGE
@@ -250,6 +272,15 @@
 
 /* the namespace where STL code like vector<> is defined */
 #undef STL_NAMESPACE
+
+/* Define 32K of internal pages size for tcmalloc */
+#undef TCMALLOC_32K_PAGES
+
+/* Define 64K of internal pages size for tcmalloc */
+#undef TCMALLOC_64K_PAGES
+
+/* Define 8 bytes of allocation alignment for tcmalloc */
+#undef TCMALLOC_ALIGN_8BYTES
 
 /* Version number of package */
 #undef VERSION
