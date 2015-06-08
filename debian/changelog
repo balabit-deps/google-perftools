@@ -1,3 +1,9 @@
+google-perftools (2.4-1ubuntu2) syslogngpe53ssb42; urgency=low
+
+  * released google-perftools 2.4 for syslog-ng-pe-5.3ssb4.2
+
+ -- Balazs Benedek <balazs.benedek@balabit.com> Mon, 08 Jun 2015 11:00:21 +0200
+
 google-perftools (2.0-1ubuntu2) syslogngpe53ssb42; urgency=low
 
   * released for syslog-ng-pe-5.3ssb4.2
