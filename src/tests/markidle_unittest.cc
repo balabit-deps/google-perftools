@@ -1,3 +1,4 @@
+// -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
 // Copyright (c) 2003, Google Inc.
 // All rights reserved.
 // 
@@ -31,10 +32,11 @@
 // Author: Sanjay Ghemawat
 //
 // MallocExtension::MarkThreadIdle() testing
+#include <stdio.h>
 
 #include "config_for_unittests.h"
 #include "base/logging.h"
-#include <google/malloc_extension.h>
+#include <gperftools/malloc_extension.h>
 #include "tests/testutil.h"   // for RunThread()
 
 // Helper routine to do lots of allocations
@@ -81,17 +83,19 @@ static size_t GetTotalThreadCacheSize() {
 // of per-thread memory.
 static void TestIdleUsage() {
   const size_t original = GetTotalThreadCacheSize();
-  VLOG(0, "Original usage: %"PRIuS"\n", original);
 
   TestAllocation();
   const size_t post_allocation = GetTotalThreadCacheSize();
-  VLOG(0, "Post allocation: %"PRIuS"\n", post_allocation);
   CHECK_GT(post_allocation, original);
 
   MallocExtension::instance()->MarkThreadIdle();
   const size_t post_idle = GetTotalThreadCacheSize();
-  VLOG(0, "Post idle: %"PRIuS"\n", post_idle);
   CHECK_LE(post_idle, original);
+
+  // Log after testing because logging can allocate heap memory.
+  VLOG(0, "Original usage: %" PRIuS "\n", original);
+  VLOG(0, "Post allocation: %" PRIuS "\n", post_allocation);
+  VLOG(0, "Post idle: %" PRIuS "\n", post_idle);
 }
 
 int main(int argc, char** argv) {

@@ -1,3 +1,4 @@
+// -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
 /* Copyright (c) 2005-2008, Google Inc.
  * All rights reserved.
  *
@@ -37,16 +38,16 @@
 extern "C" {
 #endif
 
-/* We currently only support x86-32, x86-64, ARM, and MIPS on Linux.
+/* We currently only support x86-32, x86-64, ARM, MIPS, PPC on Linux.
  * Porting to other related platforms should not be difficult.
  */
 #if (defined(__i386__) || defined(__x86_64__) || defined(__ARM_ARCH_3__) || \
-     defined(__mips__)) && defined(__linux)
+     defined(__mips__) || defined(__PPC__)) && defined(__linux)
 
 #include <stdarg.h>
 #include <stdint.h>
 #include <sys/types.h>
-#include "config.h"
+#include <config.h>
 
 
 /* Define the DUMPER symbol to make sure that there is exactly one
@@ -108,6 +109,21 @@ extern "C" {
     unsigned long cp0_cause;
     unsigned long unused;
   } mips_regs;
+#elif defined (__PPC__)
+  typedef struct ppc_regs {
+    #define SP uregs[1]         /* Stack pointer                             */
+    #define IP rip              /* Program counter                           */
+    #define LR lr               /* Link register                             */
+    unsigned long uregs[32];	/* General Purpose Registers - r0-r31.       */
+    double        fpr[32];	/* Floating-Point Registers - f0-f31.        */
+    unsigned long rip;		/* Program counter.                          */
+    unsigned long msr;
+    unsigned long ccr;
+    unsigned long lr;
+    unsigned long ctr;
+    unsigned long xeq;
+    unsigned long mq;
+  } ppc_regs;
 #endif
 
 #if defined(__i386__) && defined(__GNUC__)

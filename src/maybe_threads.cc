@@ -1,3 +1,4 @@
+// -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
 // Copyright (c) 2005, Google Inc.
 // All rights reserved.
 // 
@@ -39,6 +40,7 @@
 #include "config.h"
 #include <assert.h>
 #include <string.h>    // for memcmp
+#include <stdio.h>     // for __isthreaded on FreeBSD
 // We don't actually need strings. But including this header seems to
 // stop the compiler trying to short-circuit our pthreads existence
 // tests and claiming that the address of a function is always
@@ -58,17 +60,32 @@
 extern "C" {
   int pthread_key_create (pthread_key_t*, void (*)(void*))
       __THROW ATTRIBUTE_WEAK;
+  int pthread_key_delete (pthread_key_t)
+      __THROW ATTRIBUTE_WEAK;
   void *pthread_getspecific(pthread_key_t)
       __THROW ATTRIBUTE_WEAK;
   int pthread_setspecific(pthread_key_t, const void*)
       __THROW ATTRIBUTE_WEAK;
   int pthread_once(pthread_once_t *, void (*)(void))
-      __THROW ATTRIBUTE_WEAK;
+      ATTRIBUTE_WEAK;
 }
 
 #define MAX_PERTHREAD_VALS 16
 static void *perftools_pthread_specific_vals[MAX_PERTHREAD_VALS];
 static int next_key;
+
+// NOTE: it's similar to bitcast defined in basic_types.h with
+// exception of ignoring sizes mismatch
+template <typename T1, typename T2>
+static T2 memcpy_cast(const T1 &input) {
+  T2 output;
+  size_t s = sizeof(input);
+  if (sizeof(output) < s) {
+    s = sizeof(output);
+  }
+  memcpy(&output, &input, s);
+  return output;
+}
 
 int perftools_pthread_key_create(pthread_key_t *key,
                                  void (*destr_function) (void *)) {
@@ -76,7 +93,15 @@ int perftools_pthread_key_create(pthread_key_t *key,
     return pthread_key_create(key, destr_function);
   } else {
     assert(next_key < MAX_PERTHREAD_VALS);
-    *key = (pthread_key_t)(next_key++);
+    *key = memcpy_cast<int, pthread_key_t>(next_key++);
+    return 0;
+  }
+}
+
+int perftools_pthread_key_delete(pthread_key_t key) {
+  if (pthread_key_delete) {
+    return pthread_key_delete(key);
+  } else {
     return 0;
   }
 }
@@ -85,7 +110,7 @@ void *perftools_pthread_getspecific(pthread_key_t key) {
   if (pthread_getspecific) {
     return pthread_getspecific(key);
   } else {
-    return perftools_pthread_specific_vals[(int)key];
+    return perftools_pthread_specific_vals[memcpy_cast<pthread_key_t, int>(key)];
   }
 }
 
@@ -93,14 +118,33 @@ int perftools_pthread_setspecific(pthread_key_t key, void *val) {
   if (pthread_setspecific) {
     return pthread_setspecific(key, val);
   } else {
-    perftools_pthread_specific_vals[(int)key] = val;
+    perftools_pthread_specific_vals[memcpy_cast<pthread_key_t, int>(key)] = val;
     return 0;
   }
 }
 
+
 static pthread_once_t pthread_once_init = PTHREAD_ONCE_INIT;
 int perftools_pthread_once(pthread_once_t *ctl,
                            void  (*init_routine) (void)) {
+#ifdef __FreeBSD__
+  // On __FreeBSD__, calling pthread_once on a system that is not
+  // linked with -pthread is silently a noop. :-( Luckily, we have a
+  // workaround: FreeBSD exposes __isthreaded in <stdio.h>, which is
+  // set to 1 when the first thread is spawned.  So on those systems,
+  // we can use our own separate pthreads-once mechanism, which is
+  // used until __isthreaded is 1 (which will never be true if the app
+  // is not linked with -pthread).
+  static bool pthread_once_ran_before_threads = false;
+  if (pthread_once_ran_before_threads) {
+    return 0;
+  }
+  if (!__isthreaded) {
+    init_routine();
+    pthread_once_ran_before_threads = true;
+    return 0;
+  }
+#endif
   if (pthread_once) {
     return pthread_once(ctl, init_routine);
   } else {

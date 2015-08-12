@@ -1,3 +1,4 @@
+// -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
 /* Copyright (c) 2007, Google Inc.
  * All rights reserved.
  * 
@@ -31,47 +32,33 @@
  * Author: Craig Silverstein
  */
 
-#ifndef WIN32
+#ifndef _WIN32
 # error You should only be including windows/port.cc in a windows environment!
 #endif
 
-#include "config.h"
+#define NOMINMAX       // so std::max, below, compiles correctly
+#include <config.h>
 #include <string.h>    // for strlen(), memset(), memcmp()
 #include <assert.h>
 #include <stdarg.h>    // for va_list, va_start, va_end
+#include <algorithm>   // for std:{min,max}
 #include <windows.h>
 #include "port.h"
 #include "base/logging.h"
-#include "system-alloc.h"
+#include "base/spinlock.h"
+#include "internal_logging.h"
 
 // -----------------------------------------------------------------------
 // Basic libraries
 
-// These call the windows _vsnprintf, but always NUL-terminate.
-int safe_vsnprintf(char *str, size_t size, const char *format, va_list ap) {
-  if (size == 0)        // not even room for a \0?
-    return -1;          // not what C99 says to do, but what windows does
-  str[size-1] = '\0';
-  return _vsnprintf(str, size-1, format, ap);
-}
-
-// mingw defines its own snprintf, though msvc does not
-#ifndef __MINGW32__
-int snprintf(char *str, size_t size, const char *format, ...) {
-  va_list ap;
-  va_start(ap, format);
-  const int r = vsnprintf(str, size, format, ap);
-  va_end(ap);
-  return r;
-}
-#endif
-
+PERFTOOLS_DLL_DECL
 int getpagesize() {
   static int pagesize = 0;
   if (pagesize == 0) {
     SYSTEM_INFO system_info;
     GetSystemInfo(&system_info);
-    pagesize = system_info.dwPageSize;
+    pagesize = std::max(system_info.dwPageSize,
+                        system_info.dwAllocationGranularity);
   }
   return pagesize;
 }
@@ -81,13 +68,20 @@ extern "C" PERFTOOLS_DLL_DECL void* __sbrk(ptrdiff_t increment) {
   return NULL;
 }
 
+// We need to write to 'stderr' without having windows allocate memory.
+// The safest way is via a low-level call like WriteConsoleA().  But
+// even then we need to be sure to print in small bursts so as to not
+// require memory allocation.
+extern "C" PERFTOOLS_DLL_DECL void WriteToStderr(const char* buf, int len) {
+  // Looks like windows allocates for writes of >80 bytes
+  for (int i = 0; i < len; i += 80) {
+    write(STDERR_FILENO, buf + i, std::min(80, len - i));
+  }
+}
+
+
 // -----------------------------------------------------------------------
 // Threads code
-
-bool CheckIfKernelSupportsTLS() {
-  // TODO(csilvers): return true (all win's since win95, at least, support this)
-  return false;
-}
 
 // Windows doesn't support pthread_key_create's destr_function, and in
 // fact it's a bit tricky to get code to run when a thread exits.  This
@@ -99,10 +93,20 @@ bool CheckIfKernelSupportsTLS() {
 // binary (it also doesn't run if the thread is terminated via
 // TerminateThread, which if we're lucky this routine does).
 
-// This makes the linker create the TLS directory if it's not already
-// there (that is, even if __declspec(thead) is not used).
+// Force a reference to _tls_used to make the linker create the TLS directory
+// if it's not already there (that is, even if __declspec(thread) is not used).
+// Force a reference to p_thread_callback_tcmalloc and p_process_term_tcmalloc
+// to prevent whole program optimization from discarding the variables.
 #ifdef _MSC_VER
+#if defined(_M_IX86)
 #pragma comment(linker, "/INCLUDE:__tls_used")
+#pragma comment(linker, "/INCLUDE:_p_thread_callback_tcmalloc")
+#pragma comment(linker, "/INCLUDE:_p_process_term_tcmalloc")
+#elif defined(_M_X64)
+#pragma comment(linker, "/INCLUDE:_tls_used")
+#pragma comment(linker, "/INCLUDE:p_thread_callback_tcmalloc")
+#pragma comment(linker, "/INCLUDE:p_process_term_tcmalloc")
+#endif
 #endif
 
 // When destr_fn eventually runs, it's supposed to take as its
@@ -141,14 +145,18 @@ static void NTAPI on_tls_callback(HINSTANCE h, DWORD dwReason, PVOID pv) {
 
 #ifdef _MSC_VER
 
+// extern "C" suppresses C++ name mangling so we know the symbol names
+// for the linker /INCLUDE:symbol pragmas above.
+extern "C" {
 // This tells the linker to run these functions.
 #pragma data_seg(push, old_seg)
 #pragma data_seg(".CRT$XLB")
-static void (NTAPI *p_thread_callback)(HINSTANCE h, DWORD dwReason, PVOID pv)
-    = on_tls_callback;
+void (NTAPI *p_thread_callback_tcmalloc)(
+    HINSTANCE h, DWORD dwReason, PVOID pv) = on_tls_callback;
 #pragma data_seg(".CRT$XTU")
-static int (*p_process_term)(void) = on_process_term;
+int (*p_process_term_tcmalloc)(void) = on_process_term;
 #pragma data_seg(pop, old_seg)
+}  // extern "C"
 
 #else  // #ifdef _MSC_VER  [probably msys/mingw]
 
@@ -164,7 +172,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD dwReason, PVOID pv) {
 
 #endif  // #ifdef _MSC_VER
 
-pthread_key_t PthreadKeyCreate(void (*destr_fn)(void*)) {
+extern "C" pthread_key_t PthreadKeyCreate(void (*destr_fn)(void*)) {
   // Semantics are: we create a new key, and then promise to call
   // destr_fn with TlsGetValue(key) when the thread is destroyed
   // (as long as TlsGetValue(key) is not NULL).
@@ -178,59 +186,28 @@ pthread_key_t PthreadKeyCreate(void (*destr_fn)(void*)) {
   return key;
 }
 
-
-// -----------------------------------------------------------------------
-// These functions replace system-alloc.cc
-
-static SpinLock alloc_lock(SpinLock::LINKER_INITIALIZED);
-
-// This is mostly like MmapSysAllocator::Alloc, except it does these weird
-// munmap's in the middle of the page, which is forbidden in windows.
-extern void* TCMalloc_SystemAlloc(size_t size, size_t *actual_size,
-                                  size_t alignment) {
-  // Safest is to make actual_size same as input-size.
-  if (actual_size) {
-    *actual_size = size;
+// NOTE: this is Win2K and later.  For Win98 we could use a CRITICAL_SECTION...
+extern "C" int perftools_pthread_once(pthread_once_t *once_control,
+                                      void (*init_routine)(void)) {
+  // Try for a fast path first. Note: this should be an acquire semantics read.
+  // It is on x86 and x64, where Windows runs.
+  if (*once_control != 1) {
+    while (true) {
+      switch (InterlockedCompareExchange(once_control, 2, 0)) {
+        case 0:
+          init_routine();
+          InterlockedExchange(once_control, 1);
+          return 0;
+        case 1:
+          // The initializer has already been executed
+          return 0;
+        default:
+          // The initializer is being processed by another thread
+          SwitchToThread();
+      }
+    }
   }
-
-  SpinLockHolder sh(&alloc_lock);
-  // Align on the pagesize boundary
-  const int pagesize = getpagesize();
-  if (alignment < pagesize) alignment = pagesize;
-  size = ((size + alignment - 1) / alignment) * alignment;
-
-  // Ask for extra memory if alignment > pagesize
-  size_t extra = 0;
-  if (alignment > pagesize) {
-    extra = alignment - pagesize;
-  }
-
-  void* result = VirtualAlloc(0, size + extra,
-                              MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
-  if (result == NULL)
-    return NULL;
-
-  // Adjust the return memory so it is aligned
-  uintptr_t ptr = reinterpret_cast<uintptr_t>(result);
-  size_t adjust = 0;
-  if ((ptr & (alignment - 1)) != 0) {
-    adjust = alignment - (ptr & (alignment - 1));
-  }
-
-  ptr += adjust;
-  return reinterpret_cast<void*>(ptr);
-}
-
-void TCMalloc_SystemRelease(void* start, size_t length) {
-  // TODO(csilvers): should I be calling VirtualFree here?
-}
-
-bool RegisterSystemAllocator(SysAllocator *allocator, int priority) {
-  return false;   // we don't allow registration on windows, right now
-}
-
-void DumpSystemAllocatorStats(TCMalloc_Printer* printer) {
-  // We don't dump stats on windows, right now
+  return 0;
 }
 
 
@@ -255,83 +232,4 @@ void DeleteMatchingFiles(const char* prefix, const char* full_glob) {
     } while (FindNextFileA(hFind, &found) != FALSE);  // A is for Ansi
     FindClose(hFind);
   }
-}
-
-// -----------------------------------------------------------------------
-// Stacktrace functionality
-
-static SpinLock get_stack_trace_lock(SpinLock::LINKER_INITIALIZED);
-
-// TODO(csilvers): This will need some loving care to get it working.
-// It's also not super-fast.
-
-// Here are some notes from mmentovai:
-// ----
-// Line 140: GetThreadContext(hThread, &context);
-// Doesn't work.  GetThreadContext only returns the saved thread
-// context, which is only valid as a present-state snapshot for
-// suspended threads.  For running threads, it's just going to be the
-// context from the last time the scheduler started the thread.  You
-// obviously can't suspend the current thread to grab its context.
-//
-// You can call RtlCaptureContext if you don't care about Win2k or
-// earlier.  If you do, you'll need to provide CPU-specific code
-// (usually a little bit of _asm and a function call) to grab the
-// values of important registers.
-// ------------------------------------
-// Line 144: frame.AddrPC.Offset = context.Eip;
-// This (and other uses of context members, and
-// IMAGE_FILE_MACHINE_I386) is x86(-32)-only.  I see a comment about
-// that below, but you should probably mention it more prominently.
-//
-// (I don't think there's anything nonportable about
-// frame.AddrPC.Offset below.)
-// ------------------------------------
-// Line 148:
-// You also need to set frame.AddrStack.  Its offset field gets the
-// value of context.Esp (on x86).  The initial stack pointer can be
-// crucial to a stackwalk in the FPO cases I mentioned.
-
-#if 0
-#include <dbghelp.h>   // Provided with Microsoft Debugging Tools for Windows
-#endif
-
-int GetStackTrace(void** result, int max_depth, int skip_count) {
-  int n = 0;
-#if 0  // TODO(csilvers): figure out how to get this to work
-  SpinLockHolder holder(&get_stack_trace_lock);
-
-  HANDLE hProc = GetCurrentProcess();
-  HANDLE hThread = GetCurrentThread();
-
-  CONTEXT context;
-  memset(&context, 0, sizeof(context));
-  context.ContextFlags = CONTEXT_FULL;
-  GetThreadContext(hThread, &context);
-
-  STACKFRAME64 frame;
-  memset(&frame, 0, sizeof(frame));
-  frame.AddrPC.Offset = context.Eip;
-  frame.AddrPC.Mode = AddrModeFlat;
-  frame.AddrFrame.Offset = context.Ebp;
-  frame.AddrFrame.Mode = AddrModeFlat;
-
-  while (StackWalk64(IMAGE_FILE_MACHINE_I386,
-                     hProc,
-                     hThread,
-                     &frame,
-                     &context,
-                     0,
-                     SymFunctionTableAccess64,
-                     SymGetModuleBase64,
-                     0)
-         && n < max_depth) {
-    if (skip_count > 0) {
-      skip_count--;
-    } else {
-      result[n++] = (void*)frame.AddrPC.Offset; // Might break x64 portability
-    }
-  }
-#endif
-  return n;
 }

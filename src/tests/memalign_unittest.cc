@@ -1,3 +1,4 @@
+// -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
 // Copyright (c) 2004, Google Inc.
 // All rights reserved.
 // 
@@ -49,6 +50,7 @@
 #include <unistd.h>        // for getpagesize()
 #endif
 #include "tcmalloc.h"      // must come early, to pick up posix_memalign
+#include <assert.h>
 #include <stdlib.h>        // defines posix_memalign
 #include <stdio.h>         // for the printf at the end
 #ifdef HAVE_STDINT_H
@@ -57,8 +59,13 @@
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>        // for getpagesize()
 #endif
-#ifdef HAVE_MALLOC_H
-#include <malloc.h>
+// Malloc can be in several places on older versions of OS X.
+#if defined(HAVE_MALLOC_H)
+#include <malloc.h>        // for memalign() and valloc()
+#elif defined(HAVE_MALLOC_MALLOC_H)
+#include <malloc/malloc.h>
+#elif defined(HAVE_SYS_MALLOC_H)
+#include <sys/malloc.h>
 #endif
 #include "base/basictypes.h"
 #include "base/logging.h"
@@ -170,13 +177,19 @@ int main(int argc, char** argv) {
     CHECK(posix_memalign(&ptr, sizeof(void*)+1, 1) == EINVAL);
     CHECK(posix_memalign(&ptr, 4097, 1) == EINVAL);
 
+    // Grab some memory so that the big allocation below will definitely fail.
+    void* p_small = malloc(4*1048576);
+    CHECK(p_small != NULL);
+
     // Make sure overflow is returned as ENOMEM
-    for (size_t s = 0; ; s += (10 << 20)) {
-      int r = posix_memalign(&ptr, 1024, s);
-      if (r == ENOMEM) break;
-      CHECK(r == 0);
-      free(ptr);
+    const size_t zero = 0;
+    static const size_t kMinusNTimes = 10;
+    for ( size_t i = 1; i < kMinusNTimes; ++i ) {
+      int r = posix_memalign(&ptr, 1024, zero - i);
+      CHECK(r == ENOMEM);
     }
+
+    free(p_small);
   }
 
   const int pagesize = getpagesize();
@@ -185,8 +198,8 @@ int main(int argc, char** argv) {
     for (int s = 0; s != -1; s = NextSize(s)) {
       void* p = valloc(s);
       CheckAlignment(p, pagesize);
-      Fill(p, pagesize, 'v');
-      CHECK(Valid(p, pagesize, 'v'));
+      Fill(p, s, 'v');
+      CHECK(Valid(p, s, 'v'));
       free(p);
     }
   }
@@ -201,12 +214,6 @@ int main(int argc, char** argv) {
       CHECK(Valid(p, alloc_needed, 'x'));
       free(p);
     }
-
-    // should be safe to write upto a page in pvalloc(0) region
-    void* p = pvalloc(0);
-    Fill(p, pagesize, 'y');
-    CHECK(Valid(p, pagesize, 'y'));
-    free(p);
   }
 
   printf("PASS\n");

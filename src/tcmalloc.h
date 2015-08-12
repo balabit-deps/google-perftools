@@ -1,3 +1,4 @@
+// -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
 // Copyright (c) 2007, Google Inc.
 // All rights reserved.
 //
@@ -34,7 +35,7 @@
 // systems.  In those cases, we'll just declare them ourselves.
 // This file is meant to be used only internally, for unittests.
 
-#include "config.h"
+#include <config.h>
 
 #ifndef _XOPEN_SOURCE
 # define _XOPEN_SOURCE 600  // for posix_memalign

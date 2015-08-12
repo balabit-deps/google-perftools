@@ -1,3 +1,4 @@
+// -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
 /* Copyright (c) 2006, Google Inc.
  * All rights reserved.
  * 
@@ -26,9 +27,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * ---
- * Author: Mike Burrows
  */
 
 // Implementation of atomic operations for Mac OS X.  This file should not
@@ -55,6 +53,9 @@ typedef int32_t Atomic32;
 #endif
 
 #include <libkern/OSAtomic.h>
+
+namespace base {
+namespace subtle {
 
 #if !defined(__LP64__) && defined(__ppc__)
 
@@ -100,10 +101,6 @@ inline int64_t OSAtomicAdd64Barrier(
 }
 #endif
 
-
-namespace base {
-namespace subtle {
-
 typedef int64_t Atomic64;
 
 inline void MemoryBarrier() {
@@ -136,14 +133,19 @@ inline Atomic32 NoBarrier_AtomicExchange(volatile Atomic32 *ptr,
   return old_value;
 }
 
-inline Atomic32 NoBarrier_AtomicIncrement(volatile Atomic32 *ptr,
-                                          Atomic32 increment) {
-  return OSAtomicAdd32(increment, const_cast<Atomic32*>(ptr));
+inline Atomic32 Acquire_AtomicExchange(volatile Atomic32 *ptr,
+                                       Atomic32 new_value) {
+  Atomic32 old_value;
+  do {
+    old_value = *ptr;
+  } while (!OSAtomicCompareAndSwap32Barrier(old_value, new_value,
+                                            const_cast<Atomic32*>(ptr)));
+  return old_value;
 }
 
-inline Atomic32 Barrier_AtomicIncrement(volatile Atomic32 *ptr,
-                                          Atomic32 increment) {
-  return OSAtomicAdd32Barrier(increment, const_cast<Atomic32*>(ptr));
+inline Atomic32 Release_AtomicExchange(volatile Atomic32 *ptr,
+                                       Atomic32 new_value) {
+  return Acquire_AtomicExchange(ptr, new_value);
 }
 
 inline Atomic32 Acquire_CompareAndSwap(volatile Atomic32 *ptr,
@@ -221,14 +223,19 @@ inline Atomic64 NoBarrier_AtomicExchange(volatile Atomic64 *ptr,
   return old_value;
 }
 
-inline Atomic64 NoBarrier_AtomicIncrement(volatile Atomic64 *ptr,
-                                          Atomic64 increment) {
-  return OSAtomicAdd64(increment, const_cast<Atomic64*>(ptr));
+inline Atomic64 Acquire_AtomicExchange(volatile Atomic64 *ptr,
+                                       Atomic64 new_value) {
+  Atomic64 old_value;
+  do {
+    old_value = *ptr;
+  } while (!OSAtomicCompareAndSwap64Barrier(old_value, new_value,
+                                            const_cast<Atomic64*>(ptr)));
+  return old_value;
 }
 
-inline Atomic64 Barrier_AtomicIncrement(volatile Atomic64 *ptr,
-                                        Atomic64 increment) {
-  return OSAtomicAdd64Barrier(increment, const_cast<Atomic64*>(ptr));
+inline Atomic64 Release_AtomicExchange(volatile Atomic64 *ptr,
+                                       Atomic64 new_value) {
+  return Acquire_AtomicExchange(ptr, new_value);
 }
 
 inline Atomic64 Acquire_CompareAndSwap(volatile Atomic64 *ptr,
@@ -311,7 +318,11 @@ inline void NoBarrier_Store(volatile Atomic64* ptr, Atomic64 value) {
                        "emms\n\t"              // Reset FP registers
                        : "=m" (*ptr)
                        : "m" (value)
-                       : "memory", "%mm0");
+                       : // mark the FP stack and mmx registers as clobbered
+                         "st", "st(1)", "st(2)", "st(3)", "st(4)",
+                         "st(5)", "st(6)", "st(7)", "mm0", "mm1",
+                         "mm2", "mm3", "mm4", "mm5", "mm6", "mm7");
+
 }
 
 inline Atomic64 NoBarrier_Load(volatile const Atomic64* ptr) {
@@ -321,7 +332,11 @@ inline Atomic64 NoBarrier_Load(volatile const Atomic64* ptr) {
                        "emms\n\t"            // Reset FP registers
                        : "=m" (value)
                        : "m" (*ptr)
-                       : "memory", "%mm0");
+                       : // mark the FP stack and mmx registers as clobbered
+                         "st", "st(1)", "st(2)", "st(3)", "st(4)",
+                         "st(5)", "st(6)", "st(7)", "mm0", "mm1",
+                         "mm2", "mm3", "mm4", "mm5", "mm6", "mm7");
+
   return value;
 }
 #endif
@@ -352,9 +367,4 @@ inline Atomic64 Release_Load(volatile const Atomic64 *ptr) {
 }   // namespace base::subtle
 }   // namespace base
 
-// NOTE(vchen): The following is also deprecated.  New callers should use
-// the base::subtle namespace.
-inline void MemoryBarrier() {
-  base::subtle::MemoryBarrier();
-}
 #endif  // BASE_ATOMICOPS_INTERNALS_MACOSX_H_

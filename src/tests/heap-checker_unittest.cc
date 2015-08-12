@@ -1,10 +1,11 @@
+// -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
 // Copyright (c) 2005, Google Inc.
 // All rights reserved.
-// 
+//
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
-// 
+//
 //     * Redistributions of source code must retain the above copyright
 // notice, this list of conditions and the following disclaimer.
 //     * Redistributions in binary form must reproduce the above
@@ -14,7 +15,7 @@
 //     * Neither the name of Google Inc. nor the names of its
 // contributors may be used to endorse or promote products derived from
 // this software without specific prior written permission.
-// 
+//
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
 // "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
 // LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
@@ -58,7 +59,9 @@
 // (see the comment in our .h file).
 
 #include "config_for_unittests.h"
-#include <sys/poll.h>
+#ifdef HAVE_POLL_H
+#include <poll.h>
+#endif
 #if defined HAVE_STDINT_H
 #include <stdint.h>             // to get uint16_t (ISO naming madness)
 #elif defined HAVE_INTTYPES_H
@@ -74,13 +77,6 @@
 #include <sys/mman.h>
 #endif
 #include <fcntl.h>              // for open(), close()
-// FreeBSD has malloc.h, but complains if you use it
-#if defined(HAVE_MALLOC_H) && !defined(__FreeBSD__)
-#include <malloc.h>
-#endif
-
-#include <netinet/in.h>         // inet_ntoa
-#include <arpa/inet.h>          // inet_ntoa
 #ifdef HAVE_EXECINFO_H
 #include <execinfo.h>           // backtrace
 #endif
@@ -91,22 +87,25 @@
 #include <pwd.h>
 #endif
 
+#include <algorithm>
 #include <iostream>             // for cout
 #include <iomanip>              // for hex
-#include <set>
-#include <map>
 #include <list>
+#include <map>
 #include <memory>
-#include <vector>
+#include <set>
 #include <string>
+#include <vector>
 
+#include "base/commandlineflags.h"
 #include "base/googleinit.h"
 #include "base/logging.h"
 #include "base/commandlineflags.h"
-#include <google/heap-checker.h>
+#include "base/thread_lister.h"
+#include <gperftools/heap-checker.h>
 #include "memory_region_map.h"
-#include <google/malloc_extension.h>
-#include <google/stacktrace.h>
+#include <gperftools/malloc_extension.h>
+#include <gperftools/stacktrace.h>
 
 // On systems (like freebsd) that don't define MAP_ANONYMOUS, use the old
 // form of the name instead.
@@ -257,6 +256,9 @@ void* operator new[](size_t size, const Initialized&) {
   return p;
 }
 
+static void DoWipeStack(int n);  // defined below
+static void WipeStack() { DoWipeStack(20); }
+
 static void Pause() {
   poll(NULL, 0, 77);  // time for thread activity in HeapBusyThreadBody
 
@@ -275,6 +277,8 @@ static void Pause() {
       }
     }
   }
+  WipeStack();  // e.g. MallocExtension::VerifyAllMemory
+                // can leave pointers to heap objects on stack
 }
 
 // Make gcc think a pointer is "used"
@@ -285,7 +289,8 @@ static void Use(T** foo) {
 
 // Arbitrary value, but not such that xor'ing with it is likely
 // to map one valid pointer to another valid pointer:
-static const uintptr_t kHideMask = 0xF03A5F7B;
+static const uintptr_t kHideMask =
+  static_cast<uintptr_t>(0xF03A5F7BF03A5F7BLL);
 
 // Helpers to hide a pointer from live data traversal.
 // We just xor the pointer so that (with high probability)
@@ -315,30 +320,28 @@ static void LogHidden(const char* message, const void* ptr) {
        << ptr << " ^ " << reinterpret_cast<void*>(kHideMask) << endl;
 }
 
-// non-static to fool the compiler against inlining
-extern void (*run_hidden_ptr)(Closure* c, int n);
-void (*run_hidden_ptr)(Closure* c, int n);
-extern void (*wipe_stack_ptr)(int n);
-void (*wipe_stack_ptr)(int n);
+// volatile to fool the compiler against inlining the calls to these
+void (*volatile run_hidden_ptr)(Closure* c, int n);
+void (*volatile wipe_stack_ptr)(int n);
 
 static void DoRunHidden(Closure* c, int n) {
   if (n) {
     VLOG(10) << "Level " << n << " at " << &n;
-    run_hidden_ptr(c, n-1);
-    wipe_stack_ptr(n);
+    (*run_hidden_ptr)(c, n-1);
+    (*wipe_stack_ptr)(n);
     sleep(0);  // undo -foptimize-sibling-calls
   } else {
     c->Run();
   }
 }
 
-static void DoWipeStack(int n) {
+/*static*/ void DoWipeStack(int n) {
   VLOG(10) << "Wipe level " << n << " at " << &n;
   if (n) {
     const int sz = 30;
-    volatile int arr[sz];
-    for (int i = 0; i < sz; ++i)  arr[i] = 0;
-    wipe_stack_ptr(n-1);
+    volatile int arr[sz] ATTRIBUTE_UNUSED;
+    for (int i = 0; i < sz; ++i) arr[i] = 0;
+    (*wipe_stack_ptr)(n-1);
     sleep(0);  // undo -foptimize-sibling-calls
   }
 }
@@ -382,6 +385,25 @@ static void DeAllocHidden(void** ptr) {
   Use(ptr);
 }
 
+void PreventHeapReclaiming(size_t size) {
+#ifdef NDEBUG
+  if (true) {
+    static void** no_reclaim_list = NULL;
+    CHECK(size >= sizeof(void*));
+    // We can't use malloc_reclaim_memory flag in opt mode as debugallocation.cc
+    // is not used. Instead we allocate a bunch of heap objects that are
+    // of the same size as what we are going to leak to ensure that the object
+    // we are about to leak is not at the same address as some old allocated
+    // and freed object that might still have pointers leading to it.
+    for (int i = 0; i < 100; ++i) {
+      void** p = reinterpret_cast<void**>(new(initialized) char[size]);
+      p[0] = no_reclaim_list;
+      no_reclaim_list = p;
+    }
+  }
+#endif
+}
+
 static bool RunSilent(HeapLeakChecker* check,
                       bool (HeapLeakChecker::* func)()) {
   // By default, don't print the 'we detected a leak' message in the
@@ -402,6 +424,7 @@ enum CheckType { SAME_HEAP, NO_LEAKS };
 
 static void VerifyLeaks(HeapLeakChecker* check, CheckType type,
                         int leaked_bytes, int leaked_objects) {
+  WipeStack();  // to help with can_create_leaks_reliably
   const bool no_leaks =
     type == NO_LEAKS ? RUN_SILENT(*check, BriefNoLeaks)
                      : RUN_SILENT(*check, BriefSameHeap);
@@ -433,6 +456,7 @@ static void TestHeapLeakCheckerDeathSimple() {
 }
 
 static void MakeDeathLoop(void** arr1, void** arr2) {
+  PreventHeapReclaiming(2 * sizeof(void*));
   void** a1 = new(initialized) void*[2];
   void** a2 = new(initialized) void*[2];
   a1[1] = reinterpret_cast<void*>(a2);
@@ -474,7 +498,9 @@ static void TestHeapLeakCheckerDeathInverse() {
   LogHidden("Leaking", foo);
   DeAllocHidden(&bar);
   Pause();
-  VerifyLeaks(&check, SAME_HEAP, -150 * static_cast<int64>(sizeof(int)), 0);
+  VerifyLeaks(&check, SAME_HEAP,
+              100 * static_cast<int64>(sizeof(int)),
+              1);
   DeAllocHidden(&foo);
 }
 
@@ -506,7 +532,9 @@ static void TestHeapLeakCheckerDeathCountLess() {
   DeAllocHidden(&bar1);
   DeAllocHidden(&bar2);
   Pause();
-  VerifyLeaks(&check, SAME_HEAP, 0, -1);
+  VerifyLeaks(&check, SAME_HEAP,
+              100 * sizeof(int),
+              1);
   DeAllocHidden(&foo);
 }
 
@@ -525,9 +553,26 @@ static void TestHeapLeakCheckerDeathCountMore() {
   LogHidden("Leaking", bar2);
   DeAllocHidden(&foo);
   Pause();
-  VerifyLeaks(&check, SAME_HEAP, 0, 1);
+  VerifyLeaks(&check, SAME_HEAP,
+              100 * sizeof(int),
+              2);
   DeAllocHidden(&bar1);
   DeAllocHidden(&bar2);
+}
+
+static void TestHiddenPointer() {
+  int i;
+  void* foo = &i;
+  HiddenPointer<void> p(foo);
+  CHECK_EQ(foo, p.get());
+
+  // Confirm pointer doesn't appear to contain a byte sequence
+  // that == the pointer.  We don't really need to test that
+  // the xor trick itself works, as without it nothing in this
+  // test suite would work.  See the Hide/Unhide/*Hidden* set
+  // of helper methods.
+  void **pvoid = reinterpret_cast<void**>(&p);
+  CHECK_NE(foo, *pvoid);
 }
 
 // simple tests that deallocate what they allocated
@@ -552,8 +597,8 @@ static void TestHeapLeakChecker() {
   }
 }
 
-// no false positives from pprof
-static void TestHeapLeakCheckerPProf() {
+// no false positives
+static void TestHeapLeakCheckerNoFalsePositives() {
   { HeapLeakChecker check("trivial_p");
     int foo = 5;
     int* p = &foo;
@@ -574,9 +619,9 @@ static void TestHeapLeakCheckerPProf() {
   }
 }
 
-// trick heap change: same total # of bytes and objects, but
-// different individual object sizes
-static void TestHeapLeakCheckerTrick() {
+// test that we detect leaks when we have same total # of bytes and
+// objects, but different individual object sizes
+static void TestLeakButTotalsMatch() {
   void* bar1 = AllocHidden(240 * sizeof(int));
   Use(&bar1);
   void* bar2 = AllocHidden(160 * sizeof(int));
@@ -594,15 +639,10 @@ static void TestHeapLeakCheckerTrick() {
   DeAllocHidden(&bar1);
   DeAllocHidden(&bar2);
   Pause();
-  if (can_create_leaks_reliably) {
-    // this might still fail occasionally, but it should be very rare:
-    CHECK(check.BriefSameHeap());
-  } else {
-    // we expect it to usually misbehave, so we silence it:
-    WARN_IF(RUN_SILENT(check, BriefSameHeap) != true,
-            "Tricky leaks unexpectedly found: "
-            "Some liveness flood must be too optimistic");
-  }
+
+  // foo1 and foo2 leaked
+  VerifyLeaks(&check, NO_LEAKS, (280+120)*sizeof(int), 2);
+
   DeAllocHidden(&foo1);
   DeAllocHidden(&foo2);
 }
@@ -638,32 +678,17 @@ static void TransLeaks() {
   AllocHidden(1 * sizeof(char));
 }
 
-// have leaks but disable them
-static void DisabledLeaks() {
-  HeapLeakChecker::DisableChecksUp(1);
+// range-based disabling using Disabler
+static void ScopedDisabledLeaks() {
+  HeapLeakChecker::Disabler disabler;
   AllocHidden(3 * sizeof(int));
   TransLeaks();
+  (void)malloc(10);  // Direct leak
 }
-
-// have leaks but range-disable them
-static void RangeDisabledLeaks() {
-  void* start_address = HeapLeakChecker::GetDisableChecksStart();
-  AllocHidden(3 * sizeof(int));
-  TransLeaks();
-  HeapLeakChecker::DisableChecksToHereFrom(start_address);
-}
-
-// We need this function pointer trickery to fool an aggressive
-// optimizing compiler such as icc into not inlining DisabledLeaks().
-// Otherwise the stack-frame-address-based disabling in it
-// will wrongly disable allocation tracking in
-// the functions into which it's inlined.
-static void (*disabled_leaks_addr)() = &DisabledLeaks;
 
 // have different disabled leaks
 static void* RunDisabledLeaks(void* a) {
-  disabled_leaks_addr();
-  RangeDisabledLeaks();
+  ScopedDisabledLeaks();
   return a;
 }
 
@@ -688,10 +713,6 @@ static void TestHeapLeakCheckerDisabling() {
   RunDisabledLeaks(NULL);
   ThreadDisabledLeaks();
   ThreadDisabledLeaks();
-
-  LOG_IF(FATAL, HeapLeakChecker::HaveDisabledChecksUp(1),
-        "Some code with DisableChecksUp() got inlined into here; "
-        "need to add more tricks to prevent this inlining.");
 
   Pause();
 
@@ -747,6 +768,7 @@ static void TestSTLAllocInverse() {
   RunHidden(NewCallback(DoTestSTLAllocInverse, &x));
   LogHidden("Leaking", x);
   if (can_create_leaks_reliably) {
+    WipeStack();  // to help with can_create_leaks_reliably
     // these might still fail occasionally, but it should be very rare
     CHECK_EQ(RUN_SILENT(check, BriefNoLeaks), false);
     CHECK_GE(check.BytesLeaked(), 100 * sizeof(int));
@@ -818,9 +840,6 @@ static void TestLibCAllocate() {
   }
 
   strerror(errno);
-  struct in_addr addr;
-  addr.s_addr = INADDR_ANY;
-  inet_ntoa(addr);
   const time_t now = time(NULL);
   ctime(&now);
 #ifdef HAVE_EXECINFO_H
@@ -904,7 +923,7 @@ static void* HeapBusyThreadBody(void* a) {
       ptr = reinterpret_cast<int **>(
           reinterpret_cast<uintptr_t>(ptr) ^ kHideMask);
       // busy loop to get the thread interrupted at:
-      for (int i = 1; i < 1000000; ++i)  user += (1 + user * user * 5) / i;
+      for (int i = 1; i < 10000000; ++i)  user += (1 + user * user * 5) / i;
       ptr = reinterpret_cast<int **>(
           reinterpret_cast<uintptr_t>(ptr) ^ kHideMask);
     } else {
@@ -939,114 +958,6 @@ static void RunHeapBusyThreads() {
 
   Pause();
   Pause();
-}
-
-// tests disabling via function name
-REGISTER_MODULE_INITIALIZER(heap_checker_unittest, {
-  // TODO(csilvers): figure out when this might be true
-  can_create_leaks_reliably = false;
-  HeapLeakChecker::DisableChecksIn("NamedDisabledLeaks");
-});
-
-// NOTE: For NamedDisabledLeaks, NamedTwoDisabledLeaks
-// and NamedThreeDisabledLeaks for the name-based disabling to work in opt mode
-// we need to undo the tail-recursion optimization effect
-// of -foptimize-sibling-calls that is enabled by -O2 in gcc 3.* and 4.*
-// so that for the leaking calls we can find the stack frame
-// that resolves to a Named*DisabledLeaks function.
-// We do this by adding a fake last statement to these functions
-// so that tail-recursion optimization is done with it.
-
-// have leaks that we disable via our function name in MODULE_INITIALIZER
-static void NamedDisabledLeaks() {
-  AllocHidden(5 * sizeof(float));
-  TransLeaks();
-  sleep(0);  // undo -foptimize-sibling-calls
-}
-
-// to trick complier into preventing inlining
-static void (*named_disabled_leaks)() = &NamedDisabledLeaks;
-
-// have leaks that we disable via our function name ourselves
-static void NamedTwoDisabledLeaks() {
-  static bool first = true;
-  if (first) {
-    HeapLeakChecker::DisableChecksIn("NamedTwoDisabledLeaks");
-    first = false;
-  }
-  AllocHidden(5 * sizeof(double));
-  TransLeaks();
-  sleep(0);  // undo -foptimize-sibling-calls
-}
-
-// to trick complier into preventing inlining
-static void (*named_two_disabled_leaks)() = &NamedTwoDisabledLeaks;
-
-// have leaks that we disable via our function name in our caller
-static void NamedThreeDisabledLeaks() {
-  AllocHidden(5 * sizeof(float));
-  TransLeaks();
-  sleep(0);  // undo -foptimize-sibling-calls
-}
-
-// to trick complier into preventing inlining
-static void (*named_three_disabled_leaks)() = &NamedThreeDisabledLeaks;
-
-static bool range_disable_named = false;
-
-// have leaks that we disable via function names
-static void* RunNamedDisabledLeaks(void* a) {
-  // We get the address unconditionally here to fool gcc 4.1.0 in opt mode:
-  // else it reorders the binary code so that our return address bracketing
-  // does not work here.
-  void* start_address = HeapLeakChecker::GetDisableChecksStart();
-
-  named_disabled_leaks();
-  named_two_disabled_leaks();
-  named_three_disabled_leaks();
-
-  // TODO(maxim): do not need this if we make pprof work in automated test runs
-  if (range_disable_named) {
-    HeapLeakChecker::DisableChecksToHereFrom(start_address);
-  }
-  sleep(0);  // undo -foptimize-sibling-calls
-  return a;
-}
-
-// have leaks inside of threads that we disable via function names
-static void ThreadNamedDisabledLeaks() {
-  if (FLAGS_no_threads)  return;
-  pthread_t tid;
-  pthread_attr_t attr;
-  CHECK_EQ(pthread_attr_init(&attr), 0);
-  CHECK_EQ(pthread_create(&tid, &attr, RunNamedDisabledLeaks, NULL), 0);
-  void* res;
-  CHECK_EQ(pthread_join(tid, &res), 0);
-}
-
-// test leak disabling via function names
-static void TestHeapLeakCheckerNamedDisabling() {
-  HeapLeakChecker::DisableChecksIn("NamedThreeDisabledLeaks");
-
-  HeapLeakChecker check("named_disabling");
-
-  RunNamedDisabledLeaks(NULL);
-  RunNamedDisabledLeaks(NULL);
-  ThreadNamedDisabledLeaks();
-  RunNamedDisabledLeaks(NULL);
-  ThreadNamedDisabledLeaks();
-  ThreadNamedDisabledLeaks();
-
-  Pause();
-
-  if (!FLAGS_maybe_stripped) {
-    CHECK_EQ(check.SameHeap(), true);
-      // pprof checking should allow it
-  } else {
-    WARN_IF(check.SameHeap() != true,
-            "named_disabling leaks are caught; "
-            "we must be using a stripped binary");
-  }
 }
 
 // ========================================================================= //
@@ -1353,6 +1264,27 @@ static void* Mmapper(uintptr_t* addr_after_mmap_call) {
   return r;
 }
 
+// On PPC64 the stacktrace returned by GetStatcTrace contains the function
+// address from .text segment while function pointers points to ODP entries.
+// The following code decodes the ODP to get the actual symbol address.
+#if defined(__linux) && defined(__PPC64__) && (_CALL_ELF != 2)
+static inline uintptr_t GetFunctionAddress (void* (*func)(uintptr_t*))
+{
+  struct odp_entry_t {
+    unsigned long int symbol;
+    unsigned long int toc;
+    unsigned long int env;
+  } *odp_entry = reinterpret_cast<odp_entry_t*>(func);
+
+  return static_cast<uintptr_t>(odp_entry->symbol);
+}
+#else
+static inline uintptr_t GetFunctionAddress (void* (*func)(uintptr_t*))
+{
+  return reinterpret_cast<uintptr_t>(func);
+}
+#endif
+
 // to trick complier into preventing inlining
 static void* (*mmapper_addr)(uintptr_t* addr) = &Mmapper;
 
@@ -1373,7 +1305,7 @@ static void VerifyMemoryRegionMapStackGet() {
     }
   }
   // caller must point into Mmapper function:
-  if (!(reinterpret_cast<uintptr_t>(mmapper_addr) <= caller  &&
+  if (!(GetFunctionAddress(mmapper_addr) <= caller  &&
         caller < caller_addr_limit)) {
     LOGF << std::hex << "0x" << caller
          << " does not seem to point into code of function Mmapper at "
@@ -1406,7 +1338,7 @@ extern void VerifyHeapProfileTableStackGet() {
   uintptr_t caller =
     reinterpret_cast<uintptr_t>(HeapLeakChecker::GetAllocCaller(addr));
   // caller must point into Mallocer function:
-  if (!(reinterpret_cast<uintptr_t>(mallocer_addr) <= caller  &&
+  if (!(GetFunctionAddress(mallocer_addr) <= caller  &&
         caller < caller_addr_limit)) {
     LOGF << std::hex << "0x" << caller
          << " does not seem to point into code of function Mallocer at "
@@ -1419,6 +1351,13 @@ extern void VerifyHeapProfileTableStackGet() {
 
 // ========================================================================= //
 
+static void MakeALeak(void** arr) {
+  PreventHeapReclaiming(10 * sizeof(int));
+  void* a = new(initialized) int[10];
+  Hide(&a);
+  *arr = a;
+}
+
 // Helper to do 'return 0;' inside main(): insted we do 'return Pass();'
 static int Pass() {
   fprintf(stdout, "PASS\n");
@@ -1429,7 +1368,6 @@ static int Pass() {
 int main(int argc, char** argv) {
   run_hidden_ptr = DoRunHidden;
   wipe_stack_ptr = DoWipeStack;
-  
   if (!HeapLeakChecker::IsActive()) {
     CHECK_EQ(FLAGS_heap_check, "");
     LOG(WARNING, "HeapLeakChecker got turned off; we won't test much...");
@@ -1462,10 +1400,17 @@ int main(int argc, char** argv) {
   CHECK(HeapLeakChecker::NoGlobalLeaks());  // so far, so good
 
   if (FLAGS_test_leak) {
-    void* arr = AllocHidden(10 * sizeof(int));
+    void* arr;
+    RunHidden(NewCallback(MakeALeak, &arr));
     Use(&arr);
     LogHidden("Leaking", arr);
-    if (FLAGS_test_cancel_global_check)  HeapLeakChecker::CancelGlobalCheck();
+    if (FLAGS_test_cancel_global_check) {
+      HeapLeakChecker::CancelGlobalCheck();
+    } else {
+      // Verify we can call NoGlobalLeaks repeatedly without deadlocking
+      HeapLeakChecker::NoGlobalLeaks();
+      HeapLeakChecker::NoGlobalLeaks();
+    }
     return Pass();
       // whole-program leak-check should (with very high probability)
       // catch the leak of arr (10 * sizeof(int) bytes)
@@ -1480,7 +1425,13 @@ int main(int argc, char** argv) {
     Use(&arr2);
     LogHidden("Loop leaking", arr1);
     LogHidden("Loop leaking", arr2);
-    if (FLAGS_test_cancel_global_check)  HeapLeakChecker::CancelGlobalCheck();
+    if (FLAGS_test_cancel_global_check) {
+      HeapLeakChecker::CancelGlobalCheck();
+    } else {
+      // Verify we can call NoGlobalLeaks repeatedly without deadlocking
+      HeapLeakChecker::NoGlobalLeaks();
+      HeapLeakChecker::NoGlobalLeaks();
+    }
     return Pass();
       // whole-program leak-check should (with very high probability)
       // catch the leak of arr1 and arr2 (4 * sizeof(void*) bytes)
@@ -1490,7 +1441,10 @@ int main(int argc, char** argv) {
   if (FLAGS_test_register_leak) {
     // make us fail only where the .sh test expects:
     Pause();
-    for (int i = 0; i < 20; ++i) CHECK(HeapLeakChecker::NoGlobalLeaks());
+    for (int i = 0; i < 100; ++i) {  // give it some time to crash
+      CHECK(HeapLeakChecker::NoGlobalLeaks());
+      Pause();
+    }
     return Pass();
   }
 
@@ -1498,9 +1452,11 @@ int main(int argc, char** argv) {
 
   HeapLeakChecker heap_check("all");
 
+  TestHiddenPointer();
+
   TestHeapLeakChecker();
   Pause();
-  TestHeapLeakCheckerTrick();
+  TestLeakButTotalsMatch();
   Pause();
 
   TestHeapLeakCheckerDeathSimple();
@@ -1521,7 +1477,7 @@ int main(int argc, char** argv) {
 
   CHECK(HeapLeakChecker::NoGlobalLeaks());  // so far, so good
 
-  TestHeapLeakCheckerPProf();
+  TestHeapLeakCheckerNoFalsePositives();
   Pause();
 
   TestHeapLeakCheckerDisabling();
@@ -1555,9 +1511,6 @@ int main(int argc, char** argv) {
 
   CHECK(HeapLeakChecker::NoGlobalLeaks());  // so far, so good
 
-  void* start_address = HeapLeakChecker::GetDisableChecksStart();
-
-  TestHeapLeakCheckerNamedDisabling();
   Pause();
 
   if (!FLAGS_maybe_stripped) {
@@ -1566,13 +1519,6 @@ int main(int argc, char** argv) {
     WARN_IF(heap_check.SameHeap() != true,
             "overall leaks are caught; we must be using a stripped binary");
   }
-
-  // TODO(maxim): do not need these if we make pprof work in automated test runs
-  HeapLeakChecker::DisableChecksToHereFrom(start_address);
-  // This will also disable (w/o relying on pprof anymore)
-  // all leaks that earlier occured inside of ThreadNamedDisabledLeaks:
-  range_disable_named = true;
-  ThreadNamedDisabledLeaks();
 
   CHECK(HeapLeakChecker::NoGlobalLeaks());  // so far, so good
 

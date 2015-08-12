@@ -3,7 +3,7 @@
 
 <HEAD>
   <link rel="stylesheet" href="designstyle.css">
-  <title>Google CPU Profiler</title>
+  <title>Gperftools CPU Profiler</title>
 </HEAD>
 
 <BODY>
@@ -50,15 +50,31 @@ for a given run of an executable:</p>
 
 <ol>
   <li> <p>Define the environment variable CPUPROFILE to the filename
-       to dump the profile to.  For instance, to profile
-       <code>/usr/local/bin/my_binary_compiled_with_libprofiler_so</code>:</p>
-       <pre>% env CPUPROFILE=/tmp/mybin.prof /usr/local/bin/my_binary_compiled_with_libprofiler_so</pre>
-
+       to dump the profile to.  For instance, if you had a version of
+       <code>/bin/ls</code> that had been linked against libprofiler,
+       you could run:</p>
+       <pre>% env CPUPROFILE=ls.prof /bin/ls</pre>
+  </li>
+  <li> <p>In addition to defining the environment variable CPUPROFILE
+       you can also define CPUPROFILESIGNAL.  This allows profiling to be
+       controlled via the signal number that you specify.  The signal number
+       must be unused by the program under normal operation. Internally it
+       acts as a switch, triggered by the signal, which is off by default.
+       For instance, if you had a copy of <code>/bin/chrome</code> that had been
+       been linked against libprofiler, you could run:</p>
+       <pre>% env CPUPROFILE=chrome.prof CPUPROFILESIGNAL=12 /bin/chrome &</pre>
+       <p>You can then trigger profiling to start:</p>
+       <pre>% killall -12 chrome</pre>
+	   <p>Then after a period of time you can tell it to stop which will
+       generate the profile:</p>
+       <pre>% killall -12 chrome</pre>
+  </li>
   <li> <p>In your code, bracket the code you want profiled in calls to
        <code>ProfilerStart()</code> and <code>ProfilerStop()</code>.
-       (These functions are declared in <code>&lt;google/profiler.h&gt;</code>.)
+       (These functions are declared in <code>&lt;gperftools/profiler.h&gt;</code>.)
        <code>ProfilerStart()</code> will take
        the profile-filename as an argument.</p>
+  </li>
 </ol>
 
 <p>In Linux 2.6 and above, profiling works correctly with threads,
@@ -70,6 +86,11 @@ CPUPROFILE with the child's process id).</p>
 
 <p>For security reasons, CPU profiling will not write to a file -- and
 is thus not usable -- for setuid programs.</p>
+
+<p>See the include-file <code>gperftools/profiler.h</code> for
+advanced-use functions, including <code>ProfilerFlush()</code> and
+<code>ProfilerStartWithOptions()</code>.</p>
+
 
 <H2>Modifying Runtime Behavior</H2>
 
@@ -83,6 +104,18 @@ environment variables.</p>
   <td>default: 100</td>
   <td>
     How many interrupts/second the cpu-profiler samples.
+  </td>
+</tr>
+
+<tr valign=top>
+  <td><code>CPUPROFILE_REALTIME=1</code></td>
+  <td>default: [not set]</td>
+  <td>
+    If set to any value (including 0 or the empty string), use
+    ITIMER_REAL instead of ITIMER_PROF to gather profiles.  In
+    general, ITIMER_REAL is not as accurate as ITIMER_PROF, and also
+    interacts badly with use of alarm(), so prefer ITIMER_PROF unless
+    you have a reason prefer ITIMER_REAL.
   </td>
 </tr>
 

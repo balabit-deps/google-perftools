@@ -1,3 +1,4 @@
+// -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
 /* Copyright (c) 2007, Google Inc.
  * All rights reserved.
  * 
@@ -29,6 +30,7 @@
  *
  * ---
  * Author: Joi Sigurdsson
+ * Author: Scott Francis
  *
  * Definition of PreamblePatcher
  */
@@ -36,18 +38,37 @@
 #ifndef GOOGLE_PERFTOOLS_PREAMBLE_PATCHER_H_
 #define GOOGLE_PERFTOOLS_PREAMBLE_PATCHER_H_
 
+#include "config.h"
 #include <windows.h>
 
 // compatibility shim
 #include "base/logging.h"
-#define ASSERT(cond, msg)  RAW_DCHECK(cond, msg)
-#define ASSERT1(cond)      RAW_DCHECK(cond, #cond)
+#define SIDESTEP_ASSERT(cond)  RAW_DCHECK(cond, #cond)
+#define SIDESTEP_LOG(msg)      RAW_VLOG(1, msg)
 
 // Maximum size of the preamble stub. We overwrite at least the first 5
 // bytes of the function. Considering the worst case scenario, we need 4
 // bytes + the max instruction size + 5 more bytes for our jump back to
 // the original code. With that in mind, 32 is a good number :)
-#define MAX_PREAMBLE_STUB_SIZE    (32)     
+#ifdef _M_X64
+// In 64-bit mode we may need more room.  In 64-bit mode all jumps must be
+// within +/-2GB of RIP.  Because of this limitation we may need to use a
+// trampoline to jump to the replacement function if it is further than 2GB
+// away from the target. The trampoline is 14 bytes.
+//
+// So 4 bytes + max instruction size (17 bytes) + 5 bytes to jump back to the
+// original code + trampoline size.  64 bytes is a nice number :-)
+#define MAX_PREAMBLE_STUB_SIZE    (64)
+#else
+#define MAX_PREAMBLE_STUB_SIZE    (32)
+#endif
+
+// Determines if this is a 64-bit binary.
+#ifdef _M_X64
+static const bool kIs64BitBinary = true;
+#else
+static const bool kIs64BitBinary = false;
+#endif
 
 namespace sidestep {
 
@@ -65,8 +86,10 @@ enum SideStepError {
   SIDESTEP_UNEXPECTED,
 };
 
-#define SIDESTEP_TO_HRESULT(error) \
+#define SIDESTEP_TO_HRESULT(error)                      \
   MAKE_HRESULT(SEVERITY_ERROR, FACILITY_NULL, error)
+
+class DeleteUnsignedCharArray;
 
 // Implements a patching mechanism that overwrites the first few bytes of
 // a function preamble with a jump to our hook function, which is then
@@ -78,10 +101,10 @@ enum SideStepError {
 // See the TODO in preamble_patcher_with_stub.cc for instructions on what
 // we need to do before using it in production code; it's fairly simple
 // but unnecessary for now since we only intend to use it in unit tests.
-// 
+//
 // To patch a function, use either of the typesafe Patch() methods.  You
 // can unpatch a function using Unpatch().
-// 
+//
 // Typical usage goes something like this:
 // @code
 // typedef int (*MyTypesafeFuncPtr)(int x);
@@ -95,11 +118,11 @@ enum SideStepError {
 //   if (!original_func_stub) {
 //     // ... error handling ...
 //   }
-// 
+//
 //   // ... continue - you have patched the function successfully ...
 // }
 // @endcode
-// 
+//
 // Note that there are a number of ways that this method of patching can
 // fail.  The most common are:
 //    - If there is a jump (jxx) instruction in the first 5 bytes of
@@ -114,7 +137,7 @@ enum SideStepError {
 //    - If there is another thread currently executing within the bytes
 //    that are copied to the preamble stub, it will crash in an undefined
 //    way.
-// 
+//
 // If you get any other error than the above, you're either pointing the
 // patcher at an invalid instruction (e.g. into the middle of a multi-
 // byte instruction, or not at memory containing executable instructions)
@@ -126,7 +149,7 @@ enum SideStepError {
 // reuse the result of calling the function with a given parameter, which
 // may mean if you patch the function in between your patch will never get
 // invoked.  See preamble_patcher_test.cc for an example.
-class PreamblePatcher {
+class PERFTOOLS_DLL_DECL PreamblePatcher {
  public:
 
   // This is a typesafe version of RawPatch(), identical in all other
@@ -143,8 +166,8 @@ class PreamblePatcher {
   // @endcode
   template <class T>
   static SideStepError Patch(T target_function,
-                               T replacement_function,
-                               T* original_function_stub) {
+                             T replacement_function,
+                             T* original_function_stub) {
     // NOTE: casting from a function to a pointer is contra the C++
     //       spec.  It's not safe on IA64, but is on i386.  We use
     //       a C-style cast here to emphasize this is not legal C++.
@@ -178,23 +201,25 @@ class PreamblePatcher {
   // indicates success.
   template <class T>
   static SideStepError Patch(LPCTSTR module_name,
-                               LPCSTR function_name,
-                               T replacement_function,
-                               T* original_function_stub) {
-    ASSERT1(module_name && function_name);
+                             LPCSTR function_name,
+                             T replacement_function,
+                             T* original_function_stub) {
+    SIDESTEP_ASSERT(module_name && function_name);
     if (!module_name || !function_name) {
-      ASSERT(false,
-             "You must specify a module name and function name.");
+      SIDESTEP_ASSERT(false &&
+                      "You must specify a module name and function name.");
       return SIDESTEP_INVALID_PARAMETER;
     }
     HMODULE module = ::GetModuleHandle(module_name);
-    ASSERT1(module != NULL);
+    SIDESTEP_ASSERT(module != NULL);
     if (!module) {
-      ASSERT(false, "Invalid module name.");
+      SIDESTEP_ASSERT(false && "Invalid module name.");
       return SIDESTEP_NO_SUCH_MODULE;
     }
     FARPROC existing_function = ::GetProcAddress(module, function_name);
     if (!existing_function) {
+      SIDESTEP_ASSERT(
+          false && "Did not find any function with that name in the module.");
       return SIDESTEP_NO_SUCH_FUNCTION;
     }
     // NOTE: casting from a function to a pointer is contra the C++
@@ -238,8 +263,8 @@ class PreamblePatcher {
   // See however UnsafeUnpatch, which can be used for binaries where you
   // know only one thread is running, e.g. unit tests.
   static SideStepError RawPatch(void* target_function,
-                                  void* replacement_function,
-                                  void** original_function_stub);
+                                void* replacement_function,
+                                void** original_function_stub);
 
   // Unpatches target_function and deletes the stub that previously could be
   // used to call the original version of the function.
@@ -259,7 +284,7 @@ class PreamblePatcher {
   // unpatching is useless.
   //
   // If your original call was
-  //    origptr = Patch(VirtualAlloc, MyVirtualAlloc)
+  //    Patch(VirtualAlloc, MyVirtualAlloc, &origptr)
   // then to undo it you would call
   //    Unpatch(VirtualAlloc, MyVirtualAlloc, origptr);
   //
@@ -269,7 +294,70 @@ class PreamblePatcher {
                                void* replacement_function,
                                void* original_function_stub);
 
+  // A helper routine when patching, which follows jmp instructions at
+  // function addresses, to get to the "actual" function contents.
+  // This allows us to identify two functions that are at different
+  // addresses but actually resolve to the same code.
+  //
+  // @param target_function Pointer to a function.
+  //
+  // @return Either target_function (the input parameter), or if
+  // target_function's body consists entirely of a JMP instruction,
+  // the address it JMPs to (or more precisely, the address at the end
+  // of a chain of JMPs).
+  template <class T>
+  static T ResolveTarget(T target_function) {
+    return (T)ResolveTargetImpl((unsigned char*)target_function, NULL);
+  }
+
+  // Allocates a block of memory of size MAX_PREAMBLE_STUB_SIZE that is as
+  // close (within 2GB) as possible to target.  This is done to ensure that 
+  // we can perform a relative jump from target to a trampoline if the 
+  // replacement function is > +-2GB from target.  This means that we only need 
+  // to patch 5 bytes in the target function.
+  //
+  // @param target    Pointer to target function.
+  //
+  // @return  Returns a block of memory of size MAX_PREAMBLE_STUB_SIZE that can
+  //          be used to store a function preamble block.
+  static unsigned char* AllocPreambleBlockNear(void* target);
+
+  // Frees a block allocated by AllocPreambleBlockNear.
+  //
+  // @param block     Block that was returned by AllocPreambleBlockNear.
+  static void FreePreambleBlock(unsigned char* block);
+
  private:
+  friend class DeleteUnsignedCharArray;
+
+   // Used to store data allocated for preamble stubs
+  struct PreamblePage {
+    unsigned int magic_;
+    PreamblePage* next_;
+    // This member points to a linked list of free blocks within the page
+    // or NULL if at the end
+    void* free_;
+  };
+
+  // In 64-bit mode, the replacement function must be within 2GB of the original
+  // target in order to only require 5 bytes for the function patch.  To meet
+  // this requirement we're creating an allocator within this class to
+  // allocate blocks that are within 2GB of a given target. This member is the
+  // head of a linked list of pages used to allocate blocks that are within
+  // 2GB of the target.
+  static PreamblePage* preamble_pages_;
+  
+  // Page granularity
+  static long granularity_;
+
+  // Page size
+  static long pagesize_;
+
+  // Determines if the patcher has been initialized.
+  static bool initialized_;
+
+  // Used to initialize static members.
+  static void Initialize();
 
   // Patches a function by overwriting its first few bytes with
   // a jump to a different function.  This is similar to the RawPatch
@@ -287,9 +375,9 @@ class PreamblePatcher {
   // exactly the same calling convention and parameters as the original
   // function.
   //
-  // @param preamble_stub A pointer to a buffer where the preamble stub 
+  // @param preamble_stub A pointer to a buffer where the preamble stub
   // should be copied. The size of the buffer should be sufficient to
-  // hold the preamble bytes. 
+  // hold the preamble bytes.
   //
   // @param stub_size Size in bytes of the buffer allocated for the
   // preamble_stub
@@ -299,20 +387,232 @@ class PreamblePatcher {
   // not interested.
   //
   // @return An error code indicating the result of patching.
-  static SideStepError RawPatchWithStubAndProtections(void* target_function, 
-                                          void *replacement_function, 
-                                          unsigned char* preamble_stub, 
-                                          unsigned long stub_size, 
-                                          unsigned long* bytes_needed);
+  static SideStepError RawPatchWithStubAndProtections(
+      void* target_function,
+      void* replacement_function,
+      unsigned char* preamble_stub,
+      unsigned long stub_size,
+      unsigned long* bytes_needed);
 
-  // A helper function used by RawPatchWithStubAndProtections -- it does
-  // everything but the VirtualProtect wsork.  Defined in
+  // A helper function used by RawPatchWithStubAndProtections -- it
+  // does everything but the VirtualProtect work.  Defined in
   // preamble_patcher_with_stub.cc.
-  static SideStepError RawPatchWithStub(void* target_function, 
-                                          void *replacement_function, 
-                                          unsigned char* preamble_stub, 
-                                          unsigned long stub_size, 
-                                          unsigned long* bytes_needed);
+  //
+  // @param target_function A pointer to the function that should be
+  // patched.
+  //
+  // @param replacement_function A pointer to the function that should
+  // replace the target function.  The replacement function must have
+  // exactly the same calling convention and parameters as the original
+  // function.
+  //
+  // @param preamble_stub A pointer to a buffer where the preamble stub
+  // should be copied. The size of the buffer should be sufficient to
+  // hold the preamble bytes.
+  //
+  // @param stub_size Size in bytes of the buffer allocated for the
+  // preamble_stub
+  //
+  // @param bytes_needed Pointer to a variable that receives the minimum
+  // number of bytes required for the stub.  Can be set to NULL if you're
+  // not interested.
+  //
+  // @return An error code indicating the result of patching.
+  static SideStepError RawPatchWithStub(void* target_function,
+                                        void* replacement_function,
+                                        unsigned char* preamble_stub,
+                                        unsigned long stub_size,
+                                        unsigned long* bytes_needed);
+
+
+  // A helper routine when patching, which follows jmp instructions at
+  // function addresses, to get to the "actual" function contents.
+  // This allows us to identify two functions that are at different
+  // addresses but actually resolve to the same code.
+  //
+  // @param target_function Pointer to a function.
+  //
+  // @param stop_before If, when following JMP instructions from
+  // target_function, we get to the address stop, we return
+  // immediately, the address that jumps to stop_before.
+  //
+  // @param stop_before_trampoline  When following JMP instructions from 
+  // target_function, stop before a trampoline is detected.  See comment in
+  // PreamblePatcher::RawPatchWithStub for more information.  This parameter 
+  // has no effect in 32-bit mode.
+  //
+  // @return Either target_function (the input parameter), or if
+  // target_function's body consists entirely of a JMP instruction,
+  // the address it JMPs to (or more precisely, the address at the end
+  // of a chain of JMPs).
+  static void* ResolveTargetImpl(unsigned char* target_function,
+                                 unsigned char* stop_before,
+                                 bool stop_before_trampoline = false);
+
+  // Helper routine that attempts to allocate a page as close (within 2GB)
+  // as possible to target.
+  //
+  // @param target    Pointer to target function.
+  //
+  // @return   Returns an address that is within 2GB of target.
+  static void* AllocPageNear(void* target);
+
+  // Helper routine that determines if a target instruction is a short
+  // conditional jump.
+  //
+  // @param target            Pointer to instruction.
+  //
+  // @param instruction_size  Size of the instruction in bytes.
+  //
+  // @return  Returns true if the instruction is a short conditional jump.
+  static bool IsShortConditionalJump(unsigned char* target,
+                                     unsigned int instruction_size);
+
+  static bool IsShortJump(unsigned char *target, unsigned int instruction_size);
+
+  // Helper routine that determines if a target instruction is a near
+  // conditional jump.
+  //
+  // @param target            Pointer to instruction.
+  //
+  // @param instruction_size  Size of the instruction in bytes.
+  //
+  // @return  Returns true if the instruction is a near conditional jump.
+  static bool IsNearConditionalJump(unsigned char* target,
+                                    unsigned int instruction_size);
+
+  // Helper routine that determines if a target instruction is a near
+  // relative jump.
+  //
+  // @param target            Pointer to instruction.
+  //
+  // @param instruction_size  Size of the instruction in bytes.
+  //
+  // @return  Returns true if the instruction is a near absolute jump.
+  static bool IsNearRelativeJump(unsigned char* target,
+                                 unsigned int instruction_size);
+
+  // Helper routine that determines if a target instruction is a near 
+  // absolute call.
+  //
+  // @param target            Pointer to instruction.
+  //
+  // @param instruction_size  Size of the instruction in bytes.
+  //
+  // @return  Returns true if the instruction is a near absolute call.
+  static bool IsNearAbsoluteCall(unsigned char* target,
+                                 unsigned int instruction_size);
+
+  // Helper routine that determines if a target instruction is a near 
+  // absolute call.
+  //
+  // @param target            Pointer to instruction.
+  //
+  // @param instruction_size  Size of the instruction in bytes.
+  //
+  // @return  Returns true if the instruction is a near absolute call.
+  static bool IsNearRelativeCall(unsigned char* target,
+                                 unsigned int instruction_size);
+
+  // Helper routine that determines if a target instruction is a 64-bit MOV
+  // that uses a RIP-relative displacement.
+  //
+  // @param target            Pointer to instruction.
+  //
+  // @param instruction_size  Size of the instruction in bytes.
+  //
+  // @return  Returns true if the instruction is a MOV with displacement.
+  static bool IsMovWithDisplacement(unsigned char* target,
+                                    unsigned int instruction_size);
+
+  // Helper routine that converts a short conditional jump instruction
+  // to a near conditional jump in a target buffer.  Note that the target
+  // buffer must be within 2GB of the source for the near jump to work.
+  //
+  // A short conditional jump instruction is in the format:
+  // 7x xx = Jcc rel8off
+  //
+  // @param source              Pointer to instruction.
+  //
+  // @param instruction_size    Size of the instruction.
+  //
+  // @param target              Target buffer to write the new instruction.
+  //
+  // @param target_bytes        Pointer to a buffer that contains the size
+  //                            of the target instruction, in bytes.
+  //
+  // @param target_size         Size of the target buffer.
+  //
+  // @return  Returns SIDESTEP_SUCCESS if successful, otherwise an error.
+  static SideStepError PatchShortConditionalJump(unsigned char* source,
+                                                 unsigned int instruction_size,
+                                                 unsigned char* target,
+                                                 unsigned int* target_bytes,
+                                                 unsigned int target_size);
+
+  static SideStepError PatchShortJump(unsigned char* source,
+                                      unsigned int instruction_size,
+                                      unsigned char* target,
+                                      unsigned int* target_bytes,
+                                      unsigned int target_size);
+
+  // Helper routine that converts an instruction that will convert various
+  // jump-like instructions to corresponding instructions in the target buffer.
+  // What this routine does is fix up the relative offsets contained in jump
+  // instructions to point back to the original target routine.  Like with
+  // PatchShortConditionalJump, the target buffer must be within 2GB of the
+  // source.
+  //
+  // We currently handle the following instructions:
+  //
+  // E9 xx xx xx xx     = JMP rel32off
+  // 0F 8x xx xx xx xx  = Jcc rel32off
+  // FF /2 xx xx xx xx  = CALL reg/mem32/mem64
+  // E8 xx xx xx xx     = CALL rel32off
+  //
+  // It should not be hard to update this function to support other
+  // instructions that jump to relative targets.
+  //
+  // @param source              Pointer to instruction.
+  //
+  // @param instruction_size    Size of the instruction.
+  //
+  // @param target              Target buffer to write the new instruction.
+  //
+  // @param target_bytes        Pointer to a buffer that contains the size
+  //                            of the target instruction, in bytes.
+  //
+  // @param target_size         Size of the target buffer.
+  //
+  // @return  Returns SIDESTEP_SUCCESS if successful, otherwise an error.
+  static SideStepError PatchNearJumpOrCall(unsigned char* source,
+                                           unsigned int instruction_size,
+                                           unsigned char* target,
+                                           unsigned int* target_bytes,
+                                           unsigned int target_size);
+  
+  // Helper routine that patches a 64-bit MOV instruction with a RIP-relative
+  // displacement.  The target buffer must be within 2GB of the source.
+  //
+  // 48 8B 0D XX XX XX XX = MOV rel32off
+  //
+  // @param source              Pointer to instruction.
+  //
+  // @param instruction_size    Size of the instruction.
+  //
+  // @param target              Target buffer to write the new instruction.
+  //
+  // @param target_bytes        Pointer to a buffer that contains the size
+  //                            of the target instruction, in bytes.
+  //
+  // @param target_size         Size of the target buffer.
+  //
+  // @return  Returns SIDESTEP_SUCCESS if successful, otherwise an error.
+  static SideStepError PatchMovWithDisplacement(unsigned char* source,
+                                                unsigned int instruction_size,
+                                                unsigned char* target,
+                                                unsigned int* target_bytes,
+                                                unsigned int target_size);
 };
 
 };  // namespace sidestep

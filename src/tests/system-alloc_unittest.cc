@@ -1,3 +1,4 @@
+// -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
 // Copyright (c) 2007, Google Inc.
 // All rights reserved.
 // 
@@ -31,6 +32,7 @@
 // Author: Arun Sharma
 
 #include "config_for_unittests.h"
+#include "system-alloc.h"
 #include <stdio.h>
 #if defined HAVE_STDINT_H
 #include <stdint.h>             // to get uintptr_t
@@ -38,8 +40,11 @@
 #include <inttypes.h>           // another place uintptr_t might be defined
 #endif
 #include <sys/types.h>
-#include "base/logging.h"
-#include "system-alloc.h"
+#include <algorithm>
+#include <limits>
+#include "base/logging.h"               // for Check_GEImpl, Check_LTImpl, etc
+#include <gperftools/malloc_extension.h>    // for MallocExtension::instance
+#include "common.h"                     // for kAddressBits
 
 class ArraySysAllocator : public SysAllocator {
 public:
@@ -53,6 +58,11 @@ public:
 
   void* Alloc(size_t size, size_t *actual_size, size_t alignment) {
     invoked_ = true;
+
+    if (size > kArraySize) {
+      return NULL;
+    }
+
     void *result = &array_[ptr_];
     uintptr_t ptr = reinterpret_cast<uintptr_t>(result);
 
@@ -73,7 +83,7 @@ public:
     return reinterpret_cast<void *>(ptr);
   }
 
-  void DumpStats(TCMalloc_Printer* printer) {
+  void DumpStats() {
   }
 
 private:
@@ -87,7 +97,7 @@ const int ArraySysAllocator::kArraySize;
 ArraySysAllocator a;
 
 static void TestBasicInvoked() {
-  RegisterSystemAllocator(&a, 0);
+  MallocExtension::instance()->SetSystemAllocator(&a);
 
   // An allocation size that is likely to trigger the system allocator.
   // XXX: this is implementation specific.
@@ -98,8 +108,47 @@ static void TestBasicInvoked() {
   CHECK(a.invoked_);
 }
 
+#if 0  // could port this to various OSs, but won't bother for now
+TEST(AddressBits, CpuVirtualBits) {
+  // Check that kAddressBits is as least as large as either the number of bits
+  // in a pointer or as the number of virtual bits handled by the processor.
+  // To be effective this test must be run on each processor model.
+  const int kPointerBits = 8 * sizeof(void*);
+  const int kImplementedVirtualBits = NumImplementedVirtualBits();
+
+  CHECK_GE(kAddressBits, std::min(kImplementedVirtualBits, kPointerBits));
+}
+#endif
+
+static void TestBasicRetryFailTest() {
+  // Check with the allocator still works after a failed allocation.
+  //
+  // There is no way to call malloc and guarantee it will fail.  malloc takes a
+  // size_t parameter and the C++ standard does not constrain the size of
+  // size_t.  For example, consider an implementation where size_t is 32 bits
+  // and pointers are 64 bits.
+  //
+  // It is likely, though, that sizeof(size_t) == sizeof(void*).  In that case,
+  // the first allocation here might succeed but the second allocation must
+  // fail.
+  //
+  // If the second allocation succeeds, you will have to rewrite or
+  // disable this test.
+  // The weird parens are to avoid macro-expansion of 'max' on windows.
+  const size_t kHugeSize = (std::numeric_limits<size_t>::max)() / 2;
+  void* p1 = malloc(kHugeSize);
+  void* p2 = malloc(kHugeSize);
+  CHECK(p2 == NULL);
+  if (p1 != NULL) free(p1);
+
+  char* q = new char[1024];
+  CHECK(q != NULL);
+  delete [] q;
+}
+
 int main(int argc, char** argv) {
   TestBasicInvoked();
+  TestBasicRetryFailTest();
 
   printf("PASS\n");
   return 0;

@@ -1,3 +1,4 @@
+// -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
 /* Copyright (c) 2007, Google Inc.
  * All rights reserved.
  * 
@@ -51,13 +52,13 @@ MiniDisassembler::MiniDisassembler()
 }
 
 InstructionType MiniDisassembler::Disassemble(
-    byte* start_byte,
+    unsigned char* start_byte,
     unsigned int& instruction_bytes) {
   // Clean up any state from previous invocations.
   Initialize();
 
   // Start by processing any prefixes.
-  byte* current_byte = start_byte;
+  unsigned char* current_byte = start_byte;
   unsigned int size = 0;
   InstructionType instruction_type = ProcessPrefixes(current_byte, size);
 
@@ -100,6 +101,12 @@ InstructionType MiniDisassembler::Disassemble(
 void MiniDisassembler::Initialize() {
   operand_is_32_bits_ = operand_default_is_32_bits_;
   address_is_32_bits_ = address_default_is_32_bits_;
+#ifdef _M_X64
+  operand_default_support_64_bits_ = true;
+#else
+  operand_default_support_64_bits_ = false;
+#endif
+  operand_is_64_bits_ = false;
   operand_bytes_ = 0;
   have_modrm_ = false;
   should_decode_modrm_ = false;
@@ -109,9 +116,9 @@ void MiniDisassembler::Initialize() {
   got_66_prefix_ = false;
 }
 
-InstructionType MiniDisassembler::ProcessPrefixes(byte* start_byte,
+InstructionType MiniDisassembler::ProcessPrefixes(unsigned char* start_byte,
                                                   unsigned int& size) {
-  InstructionType instruction_type = IT_GENERIC; 
+  InstructionType instruction_type = IT_GENERIC;
   const Opcode& opcode = s_ia32_opcode_map_[0].table_[*start_byte];
 
   switch (opcode.type_) {
@@ -122,14 +129,16 @@ InstructionType MiniDisassembler::ProcessPrefixes(byte* start_byte,
       operand_is_32_bits_ = !operand_default_is_32_bits_;
       nochangeoperand:
     case IT_PREFIX:
-  
+
       if (0xF2 == (*start_byte))
         got_f2_prefix_ = true;
       else if (0xF3 == (*start_byte))
         got_f3_prefix_ = true;
       else if (0x66 == (*start_byte))
         got_66_prefix_ = true;
-  
+      else if (operand_default_support_64_bits_ && (*start_byte) & 0x48)
+        operand_is_64_bits_ = true;
+
       instruction_type = opcode.type_;
       size ++;
       // we got a prefix, so add one and check next byte
@@ -141,13 +150,13 @@ InstructionType MiniDisassembler::ProcessPrefixes(byte* start_byte,
   return instruction_type;
 }
 
-InstructionType MiniDisassembler::ProcessOpcode(byte* start_byte,
+InstructionType MiniDisassembler::ProcessOpcode(unsigned char* start_byte,
                                                 unsigned int table_index,
                                                 unsigned int& size) {
   const OpcodeTable& table = s_ia32_opcode_map_[table_index];   // Get our table
-  byte current_byte = (*start_byte) >> table.shift_;
+  unsigned char current_byte = (*start_byte) >> table.shift_;
   current_byte = current_byte & table.mask_;  // Mask out the bits we will use
-  
+
   // Check whether the byte we have is inside the table we have.
   if (current_byte < table.min_lim_ || current_byte > table.max_lim_) {
     instruction_type_ = IT_UNKNOWN;
@@ -235,10 +244,10 @@ bool MiniDisassembler::ProcessOperand(int flag_operand) {
     case AM_F: // EFLAGS register
     case AM_X: // Memory addressed by the DS:SI register pair
     case AM_Y: // Memory addressed by the ES:DI register pair
-    case AM_IMPLICIT: // Parameter is implicit, occupies no space in 
+    case AM_IMPLICIT: // Parameter is implicit, occupies no space in
                        // instruction
       break;
-  
+
     // There is a ModR/M byte but it does not necessarily need
     // to be decoded.
     case AM_C: // reg field of ModR/M selects a control register
@@ -251,20 +260,20 @@ bool MiniDisassembler::ProcessOperand(int flag_operand) {
     case AM_V: // reg field of ModR/M selects a 128-bit XMM register
       have_modrm_ = true;
       break;
-  
+
     // In these addressing modes, there is a ModR/M byte and it needs to be
     // decoded. No other (e.g. immediate) params than indicated in ModR/M.
-    case AM_E: // Operand is either a general-purpose register or memory, 
+    case AM_E: // Operand is either a general-purpose register or memory,
                  // specified by ModR/M byte
     case AM_M: // ModR/M byte will refer only to memory
-    case AM_Q: // Operand is either an MMX register or memory (complex 
+    case AM_Q: // Operand is either an MMX register or memory (complex
                  // evaluation), specified by ModR/M byte
-    case AM_W: // Operand is either a 128-bit XMM register or memory (complex 
+    case AM_W: // Operand is either a 128-bit XMM register or memory (complex
                  // eval), specified by ModR/M byte
       have_modrm_ = true;
       should_decode_modrm_ = true;
       break;
-  
+
     // These addressing modes specify an immediate or an offset value
     // directly, so we need to look at the operand type to see how many
     // bytes.
@@ -287,7 +296,7 @@ bool MiniDisassembler::ProcessOperand(int flag_operand) {
         case OT_DQ: // Double-quadword, regardless of operand-size attribute.
           operand_bytes_ += OS_DOUBLE_QUAD_WORD;
           break;
-        case OT_P: // 32-bit or 48-bit pointer, depending on operand-size 
+        case OT_P: // 32-bit or 48-bit pointer, depending on operand-size
                      // attribute.
           if (operand_is_32_bits_)
             operand_bytes_ += OS_48_BIT_POINTER;
@@ -308,14 +317,18 @@ bool MiniDisassembler::ProcessOperand(int flag_operand) {
           operand_bytes_ += OS_DOUBLE_PRECISION_FLOATING;
           break;
         case OT_SS:
-          // Scalar element of a 128-bit packed single-precision 
+          // Scalar element of a 128-bit packed single-precision
           // floating data.
-          // We simply return enItUnknown since we don't have to support 
+          // We simply return enItUnknown since we don't have to support
           // floating point
           succeeded = false;
           break;
-        case OT_V: // Word or doubleword, depending on operand-size attribute.
-          if (operand_is_32_bits_)
+        case OT_V: // Word, doubleword or quadword, depending on operand-size 
+                   // attribute.
+          if (operand_is_64_bits_ && flag_operand & AM_I &&
+              flag_operand & IOS_64)
+            operand_bytes_ += OS_QUAD_WORD;
+          else if (operand_is_32_bits_)
             operand_bytes_ += OS_DOUBLE_WORD;
           else
             operand_bytes_ += OS_WORD;
@@ -323,19 +336,19 @@ bool MiniDisassembler::ProcessOperand(int flag_operand) {
         case OT_W: // Word, regardless of operand-size attribute.
           operand_bytes_ += OS_WORD;
           break;
-    
+
         // Can safely ignore these.
-        case OT_A: // Two one-word operands in memory or two double-word 
+        case OT_A: // Two one-word operands in memory or two double-word
                      // operands in memory
         case OT_PI: // Quadword MMX technology register (e.g. mm0)
         case OT_SI: // Doubleword integer register (e.g., eax)
           break;
-    
+
         default:
           break;
       }
       break;
-  
+
     default:
       break;
   }
@@ -343,7 +356,7 @@ bool MiniDisassembler::ProcessOperand(int flag_operand) {
   return succeeded;
 }
 
-bool MiniDisassembler::ProcessModrm(byte* start_byte, 
+bool MiniDisassembler::ProcessModrm(unsigned char* start_byte,
                                     unsigned int& size) {
   // If we don't need to decode, we just return the size of the ModR/M
   // byte (there is never a SIB byte in this case).
@@ -355,8 +368,8 @@ bool MiniDisassembler::ProcessModrm(byte* start_byte,
   // We never care about the reg field, only the combination of the mod
   // and r/m fields, so let's start by packing those fields together into
   // 5 bits.
-  byte modrm = (*start_byte);
-  byte mod = modrm & 0xC0; // mask out top two bits to get mod field
+  unsigned char modrm = (*start_byte);
+  unsigned char mod = modrm & 0xC0; // mask out top two bits to get mod field
   modrm = modrm & 0x07; // mask out bottom 3 bits to get r/m field
   mod = mod >> 3; // shift the mod field to the right place
   modrm = mod | modrm; // combine the r/m and mod fields as discussed
@@ -373,7 +386,7 @@ bool MiniDisassembler::ProcessModrm(byte* start_byte,
 
   // Invariant: modrm_entry points to information that we need to decode
   // the ModR/M byte.
-  
+
   // Add to the count of operand bytes, if the ModR/M byte indicates
   // that some operands are encoded in the instruction.
   if (modrm_entry->is_encoded_in_instruction_)
@@ -390,11 +403,11 @@ bool MiniDisassembler::ProcessModrm(byte* start_byte,
   }
 }
 
-bool MiniDisassembler::ProcessSib(byte* start_byte, 
-                                  byte mod, 
+bool MiniDisassembler::ProcessSib(unsigned char* start_byte,
+                                  unsigned char mod,
                                   unsigned int& size) {
   // get the mod field from the 2..0 bits of the SIB byte
-  byte sib_base = (*start_byte) & 0x07;
+  unsigned char sib_base = (*start_byte) & 0x07;
   if (0x05 == sib_base) {
     switch (mod) {
     case 0x00: // mod == 00

@@ -25,7 +25,6 @@
 				RuntimeLibrary="1"
 				UsePrecompiledHeader="0"
 				WarningLevel="3"
-				Detect64BitPortabilityProblems="TRUE"
 				DebugInformationFormat="4"/>
 			<Tool
 				Name="VCCustomBuildTool"/>
@@ -33,7 +32,6 @@
 				Name="VCLinkerTool"
 				OutputFile="$(OutDir)/libtcmalloc_minimal-debug.dll"
 				LinkIncremental="2"
-				ModuleDefinitionFile="..\..\src\windows\vc7and8.def"
 				GenerateDebugInformation="TRUE"
 				ProgramDatabaseFile="$(OutDir)/libtcmalloc_minimal.pdb"
 				SubSystem="2"
@@ -72,7 +70,6 @@
 				RuntimeLibrary="0"
 				UsePrecompiledHeader="0"
 				WarningLevel="3"
-				Detect64BitPortabilityProblems="TRUE"
 				DebugInformationFormat="3"/>
 			<Tool
 				Name="VCCustomBuildTool"/>
@@ -80,7 +77,6 @@
 				Name="VCLinkerTool"
 				OutputFile="$(OutDir)/libtcmalloc_minimal.dll"
 				LinkIncremental="1"
-				ModuleDefinitionFile="..\..\src\windows\vc7and8.def"
 				GenerateDebugInformation="TRUE"
 				SubSystem="2"
 				OptimizeReferences="2"
@@ -117,7 +113,24 @@
 			Filter="cpp;c;cxx;def;odl;idl;hpj;bat;asm;asmx"
 			UniqueIdentifier="{4FC737F1-C7A5-4376-A066-2A32D752A2FF}">
 			<File
-				RelativePath="..\..\src\base\dynamic_annotations.cc">
+				RelativePath="..\..\src\central_freelist.cc">
+				<FileConfiguration
+					Name="Debug|Win32">
+					<Tool
+						Name="VCCLCompilerTool"
+						AdditionalIncludeDirectories="..\..\src\windows; ..\..\src"
+						RuntimeLibrary="3"/>
+				</FileConfiguration>
+				<FileConfiguration
+					Name="Release|Win32">
+					<Tool
+						Name="VCCLCompilerTool"
+						AdditionalIncludeDirectories="..\..\src\windows; ..\..\src"
+						RuntimeLibrary="2"/>
+				</FileConfiguration>
+			</File>
+			<File
+				RelativePath="..\..\src\base\dynamic_annotations.c">
 				<FileConfiguration
 					Name="Debug|Win32">
 					<Tool
@@ -135,6 +148,23 @@
 			</File>
 			<File
 				RelativePath="..\..\src\heap-profile-table.cc">
+				<FileConfiguration
+					Name="Debug|Win32">
+					<Tool
+						Name="VCCLCompilerTool"
+						AdditionalIncludeDirectories="..\..\src\windows; ..\..\src"
+						RuntimeLibrary="3"/>
+				</FileConfiguration>
+				<FileConfiguration
+					Name="Release|Win32">
+					<Tool
+						Name="VCCLCompilerTool"
+						AdditionalIncludeDirectories="..\..\src\windows; ..\..\src"
+						RuntimeLibrary="2"/>
+				</FileConfiguration>
+			</File>
+			<File
+				RelativePath="..\..\src\symbolize.cc">
 				<FileConfiguration
 					Name="Debug|Win32">
 					<Tool
@@ -169,6 +199,23 @@
 			</File>
 			<File
 				RelativePath="..\..\src\windows\ia32_opcode_map.cc">
+				<FileConfiguration
+					Name="Debug|Win32">
+					<Tool
+						Name="VCCLCompilerTool"
+						AdditionalIncludeDirectories="..\..\src\windows; ..\..\src"
+						RuntimeLibrary="3"/>
+				</FileConfiguration>
+				<FileConfiguration
+					Name="Release|Win32">
+					<Tool
+						Name="VCCLCompilerTool"
+						AdditionalIncludeDirectories="..\..\src\windows; ..\..\src"
+						RuntimeLibrary="2"/>
+				</FileConfiguration>
+			</File>
+			<File
+				RelativePath="..\..\src\common.cc">
 				<FileConfiguration
 					Name="Debug|Win32">
 					<Tool
@@ -304,6 +351,40 @@
 				</FileConfiguration>
 			</File>
 			<File
+				RelativePath="..\..\src\page_heap.cc">
+				<FileConfiguration
+					Name="Debug|Win32">
+					<Tool
+						Name="VCCLCompilerTool"
+						AdditionalIncludeDirectories="..\..\src\windows; ..\..\src"
+						RuntimeLibrary="3"/>
+				</FileConfiguration>
+				<FileConfiguration
+					Name="Release|Win32">
+					<Tool
+						Name="VCCLCompilerTool"
+						AdditionalIncludeDirectories="..\..\src\windows; ..\..\src"
+						RuntimeLibrary="2"/>
+				</FileConfiguration>
+			</File>
+			<File
+				RelativePath="..\..\src\sampler.cc">
+				<FileConfiguration
+					Name="Debug|Win32">
+					<Tool
+						Name="VCCLCompilerTool"
+						AdditionalIncludeDirectories="..\..\src\windows; ..\..\src"
+						RuntimeLibrary="3"/>
+				</FileConfiguration>
+				<FileConfiguration
+					Name="Release|Win32">
+					<Tool
+						Name="VCCLCompilerTool"
+						AdditionalIncludeDirectories="..\..\src\windows; ..\..\src"
+						RuntimeLibrary="2"/>
+				</FileConfiguration>
+			</File>
+			<File
 				RelativePath="..\..\src\windows\patch_functions.cc">
 				<FileConfiguration
 					Name="Debug|Win32">
@@ -372,6 +453,142 @@
 				</FileConfiguration>
 			</File>
 			<File
+				RelativePath="..\..\src\windows\system-alloc.cc">
+				<FileConfiguration
+					Name="Debug|Win32">
+					<Tool
+						Name="VCCLCompilerTool"
+						AdditionalIncludeDirectories="..\..\src\windows; ..\..\src"
+						RuntimeLibrary="3"/>
+				</FileConfiguration>
+				<FileConfiguration
+					Name="Release|Win32">
+					<Tool
+						Name="VCCLCompilerTool"
+						AdditionalIncludeDirectories="..\..\src\windows; ..\..\src"
+						RuntimeLibrary="2"/>
+				</FileConfiguration>
+			</File>
+			<File
+				RelativePath="..\..\src\raw_printer.cc">
+				<FileConfiguration
+					Name="Debug|Win32">
+					<Tool
+						Name="VCCLCompilerTool"
+						AdditionalIncludeDirectories="..\..\src\windows; ..\..\src"
+						RuntimeLibrary="3"/>
+				</FileConfiguration>
+				<FileConfiguration
+					Name="Release|Win32">
+					<Tool
+						Name="VCCLCompilerTool"
+						AdditionalIncludeDirectories="..\..\src\windows; ..\..\src"
+						RuntimeLibrary="2"/>
+				</FileConfiguration>
+			</File>
+			<File
+				RelativePath="..\..\src\span.cc">
+				<FileConfiguration
+					Name="Debug|Win32">
+					<Tool
+						Name="VCCLCompilerTool"
+						AdditionalIncludeDirectories="..\..\src\windows; ..\..\src"
+						RuntimeLibrary="3"/>
+				</FileConfiguration>
+				<FileConfiguration
+					Name="Release|Win32">
+					<Tool
+						Name="VCCLCompilerTool"
+						AdditionalIncludeDirectories="..\..\src\windows; ..\..\src"
+						RuntimeLibrary="2"/>
+				</FileConfiguration>
+			</File>
+			<File
+				RelativePath="..\..\src\stacktrace.cc">
+				<FileConfiguration
+					Name="Debug|Win32">
+					<Tool
+						Name="VCCLCompilerTool"
+						AdditionalIncludeDirectories="..\..\src\windows; ..\..\src"
+						RuntimeLibrary="3"/>
+				</FileConfiguration>
+				<FileConfiguration
+					Name="Release|Win32">
+					<Tool
+						Name="VCCLCompilerTool"
+						AdditionalIncludeDirectories="..\..\src\windows; ..\..\src"
+						RuntimeLibrary="2"/>
+				</FileConfiguration>
+			</File>
+			<File
+				RelativePath="..\..\src\stack_trace_table.cc">
+				<FileConfiguration
+					Name="Debug|Win32">
+					<Tool
+						Name="VCCLCompilerTool"
+						AdditionalIncludeDirectories="..\..\src\windows; ..\..\src"
+						RuntimeLibrary="3"/>
+				</FileConfiguration>
+				<FileConfiguration
+					Name="Release|Win32">
+					<Tool
+						Name="VCCLCompilerTool"
+						AdditionalIncludeDirectories="..\..\src\windows; ..\..\src"
+						RuntimeLibrary="2"/>
+				</FileConfiguration>
+			</File>
+			<File
+				RelativePath="..\..\src\static_vars.cc">
+				<FileConfiguration
+					Name="Debug|Win32">
+					<Tool
+						Name="VCCLCompilerTool"
+						AdditionalIncludeDirectories="..\..\src\windows; ..\..\src"
+						RuntimeLibrary="3"/>
+				</FileConfiguration>
+				<FileConfiguration
+					Name="Release|Win32">
+					<Tool
+						Name="VCCLCompilerTool"
+						AdditionalIncludeDirectories="..\..\src\windows; ..\..\src"
+						RuntimeLibrary="2"/>
+				</FileConfiguration>
+			</File>
+			<File
+				RelativePath="..\..\src\base\spinlock.cc">
+				<FileConfiguration
+					Name="Debug|Win32">
+					<Tool
+						Name="VCCLCompilerTool"
+						AdditionalIncludeDirectories="..\..\src\windows;..\..\src"
+						RuntimeLibrary="3"/>
+				</FileConfiguration>
+				<FileConfiguration
+					Name="Release|Win32">
+					<Tool
+						Name="VCCLCompilerTool"
+						AdditionalIncludeDirectories="..\..\src\windows;..\..\src"
+						RuntimeLibrary="2"/>
+				</FileConfiguration>
+			</File>
+			<File
+				RelativePath="..\..\src\base\spinlock_internal.cc">
+				<FileConfiguration
+					Name="Debug|Win32">
+					<Tool
+						Name="VCCLCompilerTool"
+						AdditionalIncludeDirectories="..\..\src\windows;..\..\src"
+						RuntimeLibrary="3"/>
+				</FileConfiguration>
+				<FileConfiguration
+					Name="Release|Win32">
+					<Tool
+						Name="VCCLCompilerTool"
+						AdditionalIncludeDirectories="..\..\src\windows;..\..\src"
+						RuntimeLibrary="2"/>
+				</FileConfiguration>
+			</File>
+			<File
 				RelativePath="..\..\src\base\sysinfo.cc">
 				<FileConfiguration
 					Name="Debug|Win32">
@@ -389,7 +606,7 @@
 				</FileConfiguration>
 			</File>
 			<File
-				RelativePath="..\..\src\tcmalloc.cc">
+				RelativePath="..\..\src\thread_cache.cc">
 				<FileConfiguration
 					Name="Debug|Win32">
 					<Tool
@@ -417,6 +634,9 @@
 				RelativePath="..\..\src\base\basictypes.h">
 			</File>
 			<File
+				RelativePath="..\..\src\central_freelist.h">
+			</File>
+			<File
 				RelativePath="..\..\src\base\commandlineflags.h">
 			</File>
 			<File
@@ -426,16 +646,25 @@
 				RelativePath="..\..\src\base\googleinit.h">
 			</File>
 			<File
-				RelativePath="..\..\src\google\heap-checker.h">
+				RelativePath="..\..\src\gperftools\heap-checker.h">
 			</File>
 			<File
 				RelativePath="..\..\src\heap-profile-table.h">
 			</File>
 			<File
-				RelativePath="..\..\src\google\heap-profiler.h">
+				RelativePath="..\..\src\symbolize.h">
+			</File>
+			<File
+				RelativePath="..\..\src\gperftools\heap-profiler.h">
+			</File>
+			<File
+				RelativePath="..\..\src\common.h">
 			</File>
 			<File
 				RelativePath="..\..\src\internal_logging.h">
+			</File>
+			<File
+				RelativePath="..\..\src\base\linked_list.h">
 			</File>
 			<File
 				RelativePath="..\..\src\base\logging.h">
@@ -444,10 +673,43 @@
 				RelativePath="..\..\src\base\low_level_alloc.h">
 			</File>
 			<File
-				RelativePath="..\..\src\google\malloc_extension.h">
+				RelativePath="..\..\src\base\atomicops-internals-arm-gcc.h">
 			</File>
 			<File
-				RelativePath="..\..\src\google\malloc_hook.h">
+				RelativePath="..\..\src\base\atomicops-internals-linuxppc.h">
+			</File>
+			<File
+				RelativePath="..\..\src\base\atomicops-internals-macosx.h">
+			</File>
+			<File
+				RelativePath="..\..\src\base\atomicops-internals-x86-msvc.h">
+			</File>
+			<File
+				RelativePath="..\..\src\base\atomicops-internals-x86.h">
+			</File>
+			<File
+				RelativePath="..\..\src\base\atomicops.h">
+			</File>
+			<File
+				RelativePath="..\..\src\base\spinlock.h">
+			</File>
+			<File
+				RelativePath="..\..\src\base\spinlock_internal.h">
+			</File>
+			<File
+				RelativePath="..\..\src\base\spinlock_linux-inl.h">
+			</File>
+			<File
+				RelativePath="..\..\src\base\spinlock_posix-inl.h">
+			</File>
+			<File
+				RelativePath="..\..\src\base\spinlock_win32-inl.h">
+			</File>
+			<File
+				RelativePath="..\..\src\gperftools\malloc_extension.h">
+			</File>
+			<File
+				RelativePath="..\..\src\gperftools\malloc_hook.h">
 			</File>
 			<File
 				RelativePath="..\..\src\malloc_hook-inl.h">
@@ -474,6 +736,12 @@
 				RelativePath="..\..\src\packed-cache-inl.h">
 			</File>
 			<File
+				RelativePath="..\..\src\page_heap.h">
+			</File>
+			<File
+				RelativePath="..\..\src\page_heap_allocator.h">
+			</File>
+			<File
 				RelativePath="..\..\src\pagemap.h">
 			</File>
 			<File
@@ -483,10 +751,31 @@
 				RelativePath="..\..\src\windows\preamble_patcher.h">
 			</File>
 			<File
-				RelativePath="..\..\src\google\profiler.h">
+				RelativePath="..\..\src\gperftools\profiler.h">
 			</File>
 			<File
-				RelativePath="..\..\src\google\stacktrace.h">
+				RelativePath="..\..\src\raw_printer.h">
+			</File>
+			<File
+				RelativePath="..\..\src\sampler.h">
+			</File>
+			<File
+				RelativePath="..\..\src\span.h">
+			</File>
+			<File
+				RelativePath="..\..\src\gperftools\stacktrace.h">
+			</File>
+			<File
+				RelativePath="..\..\src\stacktrace_config.h">
+			</File>
+			<File
+				RelativePath="..\..\src\stacktrace_win32-inl.h">
+			</File>
+			<File
+				RelativePath="..\..\src\stack_trace_table.h">
+			</File>
+			<File
+				RelativePath="..\..\src\static_vars.h">
 			</File>
 			<File
 				RelativePath="..\..\src\base\stl_allocator.h">
@@ -499,6 +788,12 @@
 			</File>
 			<File
 				RelativePath="..\..\src\tcmalloc.h">
+			</File>
+			<File
+				RelativePath="..\..\src\base\thread_annotations.h">
+			</File>
+			<File
+				RelativePath="..\..\src\thread_cache.h">
 			</File>
 		</Filter>
 	</Files>

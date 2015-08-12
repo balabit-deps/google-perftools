@@ -1,3 +1,4 @@
+// -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
 // Copyright (c) 2005, Google Inc.
 // All rights reserved.
 // 
@@ -35,28 +36,38 @@
 #ifndef _LOGGING_H_
 #define _LOGGING_H_
 
-#include "config.h"
+#include <config.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <stdio.h>
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>    // for write()
 #endif
-#include <string.h>    // for strlen()
+#include <string.h>    // for strlen(), strcmp()
 #include <assert.h>
 #include <errno.h>     // for errno
 #include "base/commandlineflags.h"
 
 // On some systems (like freebsd), we can't call write() at all in a
 // global constructor, perhaps because errno hasn't been set up.
+// (In windows, we can't call it because it might call malloc.)
 // Calling the write syscall is safer (it doesn't set errno), so we
 // prefer that.  Note we don't care about errno for logging: we just
 // do logging on a best-effort basis.
-#ifdef HAVE_SYS_SYSCALL_H
+#if defined(_MSC_VER)
+#define WRITE_TO_STDERR(buf, len) WriteToStderr(buf, len);  // in port.cc
+#elif defined(HAVE_SYS_SYSCALL_H)
 #include <sys/syscall.h>
 #define WRITE_TO_STDERR(buf, len) syscall(SYS_write, STDERR_FILENO, buf, len)
 #else
 #define WRITE_TO_STDERR(buf, len) write(STDERR_FILENO, buf, len)
+#endif
+
+// MSVC and mingw define their own, safe version of vnsprintf (the
+// windows one in broken) in port.cc.  Everyone else can use the
+// version here.  We had to give it a unique name for windows.
+#ifndef _WIN32
+# define perftools_vsnprintf vsnprintf
 #endif
 
 
@@ -75,7 +86,7 @@ DECLARE_int32(verbose);
     if (!(condition)) {                                                 \
       WRITE_TO_STDERR("Check failed: " #condition "\n",                 \
                       sizeof("Check failed: " #condition "\n")-1);      \
-      exit(1);                                                          \
+      abort();                                                          \
     }                                                                   \
   } while (0)
 
@@ -85,7 +96,7 @@ DECLARE_int32(verbose);
     if (!(condition)) {                                                        \
       WRITE_TO_STDERR("Check failed: " #condition ": " message "\n",           \
                       sizeof("Check failed: " #condition ": " message "\n")-1);\
-      exit(1);                                                                 \
+      abort();                                                                 \
     }                                                                          \
   } while (0)
 
@@ -108,7 +119,7 @@ enum { DEBUG_MODE = 1 };
                       sizeof("Check failed: " #condition ": ")-1);      \
       WRITE_TO_STDERR(strerror(err_no), strlen(strerror(err_no)));      \
       WRITE_TO_STDERR("\n", sizeof("\n")-1);                            \
-      exit(1);                                                          \
+      abort();                                                          \
     }                                                                   \
   } while (0)
 
@@ -125,7 +136,7 @@ enum { DEBUG_MODE = 1 };
   do {                                                                  \
     if (!((val1) op (val2))) {                                          \
       fprintf(stderr, "Check failed: %s %s %s\n", #val1, #op, #val2);   \
-      exit(1);                                                          \
+      abort();                                                          \
     }                                                                   \
   } while (0)
 
@@ -135,6 +146,27 @@ enum { DEBUG_MODE = 1 };
 #define CHECK_LT(val1, val2) CHECK_OP(< , val1, val2)
 #define CHECK_GE(val1, val2) CHECK_OP(>=, val1, val2)
 #define CHECK_GT(val1, val2) CHECK_OP(> , val1, val2)
+
+// Synonyms for CHECK_* that are used in some unittests.
+#define EXPECT_EQ(val1, val2) CHECK_EQ(val1, val2)
+#define EXPECT_NE(val1, val2) CHECK_NE(val1, val2)
+#define EXPECT_LE(val1, val2) CHECK_LE(val1, val2)
+#define EXPECT_LT(val1, val2) CHECK_LT(val1, val2)
+#define EXPECT_GE(val1, val2) CHECK_GE(val1, val2)
+#define EXPECT_GT(val1, val2) CHECK_GT(val1, val2)
+#define ASSERT_EQ(val1, val2) EXPECT_EQ(val1, val2)
+#define ASSERT_NE(val1, val2) EXPECT_NE(val1, val2)
+#define ASSERT_LE(val1, val2) EXPECT_LE(val1, val2)
+#define ASSERT_LT(val1, val2) EXPECT_LT(val1, val2)
+#define ASSERT_GE(val1, val2) EXPECT_GE(val1, val2)
+#define ASSERT_GT(val1, val2) EXPECT_GT(val1, val2)
+// As are these variants.
+#define EXPECT_TRUE(cond)     CHECK(cond)
+#define EXPECT_FALSE(cond)    CHECK(!(cond))
+#define EXPECT_STREQ(a, b)    CHECK(strcmp(a, b) == 0)
+#define ASSERT_TRUE(cond)     EXPECT_TRUE(cond)
+#define ASSERT_FALSE(cond)    EXPECT_FALSE(cond)
+#define ASSERT_STREQ(a, b)    EXPECT_STREQ(a, b)
 
 // Used for (libc) functions that return -1 and set errno
 #define CHECK_ERR(invocation)  PCHECK((invocation) != -1)
@@ -167,7 +199,7 @@ inline void LogPrintf(int severity, const char* pat, va_list ap) {
   // We write directly to the stderr file descriptor and avoid FILE
   // buffering because that may invoke malloc()
   char buf[600];
-  vsnprintf(buf, sizeof(buf)-1, pat, ap);
+  perftools_vsnprintf(buf, sizeof(buf)-1, pat, ap);
   if (buf[0] != '\0' && buf[strlen(buf)-1] != '\n') {
     assert(strlen(buf)+1 < sizeof(buf));
     strcat(buf, "\n");
@@ -200,5 +232,28 @@ inline void VLOG(int lvl, const char* pat, ...)     { LOG_PRINTF(lvl, pat); }
 inline void LOG_IF(int lvl, bool cond, const char* pat, ...) {
   if (cond)  LOG_PRINTF(lvl, pat);
 }
+
+// This isn't technically logging, but it's also IO and also is an
+// attempt to be "raw" -- that is, to not use any higher-level libc
+// routines that might allocate memory or (ideally) try to allocate
+// locks.  We use an opaque file handle (not necessarily an int)
+// to allow even more low-level stuff in the future.
+// Like other "raw" routines, these functions are best effort, and
+// thus don't return error codes (except RawOpenForWriting()).
+#if defined(_WIN32) || defined(__CYGWIN__) || defined(__CYGWIN32__)
+#ifndef NOMINMAX
+#define NOMINMAX     // @#!$& windows
+#endif
+#include <windows.h>
+typedef HANDLE RawFD;
+const RawFD kIllegalRawFD = INVALID_HANDLE_VALUE;
+#else
+typedef int RawFD;
+const RawFD kIllegalRawFD = -1;   // what open returns if it fails
+#endif  // defined(_WIN32) || defined(__CYGWIN__) || defined(__CYGWIN32__)
+
+RawFD RawOpenForWriting(const char* filename);   // uses default permissions
+void RawWrite(RawFD fd, const char* buf, size_t len);
+void RawClose(RawFD fd);
 
 #endif // _LOGGING_H_

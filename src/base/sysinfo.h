@@ -1,3 +1,4 @@
+// -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
 // Copyright (c) 2006, Google Inc.
 // All rights reserved.
 // 
@@ -26,9 +27,6 @@
 // THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-//
-// ---
-// Author: Mike Burrows
 
 // All functions here are thread-hostile due to file caching unless
 // commented otherwise.
@@ -36,12 +34,12 @@
 #ifndef _SYSINFO_H_
 #define _SYSINFO_H_
 
-#include "config.h"
+#include <config.h>
 
 #include <time.h>
-#ifdef WIN32
+#if (defined(_WIN32) || defined(__MINGW32__)) && (!defined(__CYGWIN__) && !defined(__CYGWIN32__))
 #include <windows.h>   // for DWORD
-#include <TlHelp32.h>  // for CreateToolhelp32Snapshot
+#include <tlhelp32.h>  // for CreateToolhelp32Snapshot
 #endif
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>    // for pid_t
@@ -49,15 +47,21 @@
 #include <stddef.h>    // for size_t
 #include <limits.h>    // for PATH_MAX
 #include "base/basictypes.h"
+#include "base/logging.h"   // for RawFD
 
-// This getenv prefers using /proc/self/environ to calling getenv().
-// It's intended to be used in routines that run before main(), when
-// the state required for getenv() may not be set up yet.  In particular,
-// errno isn't set up until relatively late (after the pthreads library
-// has a chance to make it threadsafe), and getenv() doesn't work until then.
-// Note that /proc only has the environment at the time the application was
-// started, so this routine ignores setenv() calls/etc.  Also note it only
-// reads the first 16K of the environment.
+// This getenv function is safe to call before the C runtime is initialized.
+// On Windows, it utilizes GetEnvironmentVariable() and on unix it uses
+// /proc/self/environ instead calling getenv().  It's intended to be used in
+// routines that run before main(), when the state required for getenv() may
+// not be set up yet.  In particular, errno isn't set up until relatively late
+// (after the pthreads library has a chance to make it threadsafe), and
+// getenv() doesn't work until then. 
+// On some platforms, this call will utilize the same, static buffer for
+// repeated GetenvBeforeMain() calls. Callers should not expect pointers from
+// this routine to be long lived.
+// Note that on unix, /proc only has the environment at the time the
+// application was started, so this routine ignores setenv() calls/etc.  Also
+// note it only reads the first 16K of the environment.
 extern const char* GetenvBeforeMain(const char* name);
 
 // This takes as an argument an environment-variable name (like
@@ -68,9 +72,19 @@ extern bool GetUniquePathFromEnv(const char* env_name, char* path);
 
 extern int NumCPUs();
 
+void SleepForMilliseconds(int milliseconds);
+
 // processor cycles per second of each processor.  Thread-safe.
 extern double CyclesPerSecond(void);
 
+
+//  Return true if we're running POSIX (e.g., NPTL on Linux) threads,
+//  as opposed to a non-POSIX thread library.  The thing that we care
+//  about is whether a thread's pid is the same as the thread that
+//  spawned it.  If so, this function returns true.
+//  Thread-safe.
+//  Note: We consider false negatives to be OK.
+bool HasPosixThreads();
 
 #ifndef SWIG  // SWIG doesn't like struct Buffer and variable arguments.
 
@@ -181,7 +195,7 @@ class ProcMapsIterator {
   char *etext_;       // end of text
   char *nextline_;    // start of next line
   char *ebuf_;        // end of buffer (1 char for a nul)
-#if defined(WIN32)
+#if (defined(_WIN32) || defined(__MINGW32__)) && (!defined(__CYGWIN__) && !defined(__CYGWIN32__))
   HANDLE snapshot_;   // filehandle on dll info
   // In a change from the usual W-A pattern, there is no A variant of
   // MODULEENTRY32.  Tlhelp32.h #defines the W variant, but not the A.
@@ -198,14 +212,25 @@ class ProcMapsIterator {
 #elif defined(__MACH__)
   int current_image_; // dll's are called "images" in macos parlance
   int current_load_cmd_;   // the segment of this dll we're examining
+#elif defined(__sun__)     // Solaris
+  int fd_;
+  char current_filename_[PATH_MAX];
 #else
   int fd_;            // filehandle on /proc/*/maps
 #endif
+  pid_t pid_;
   char flags_[10];
   Buffer* dynamic_buffer_;  // dynamically-allocated Buffer
   bool using_maps_backing_; // true if we are looking at maps_backing instead of maps.
 };
 
 #endif  /* #ifndef SWIG */
+
+// Helper routines
+
+namespace tcmalloc {
+int FillProcSelfMaps(char buf[], int size, bool* wrote_all);
+void DumpProcSelfMaps(RawFD fd);
+}
 
 #endif   /* #ifndef _SYSINFO_H_ */

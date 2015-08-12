@@ -1,3 +1,4 @@
+// -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
 // Copyright (c) 2007, Google Inc.
 // All rights reserved.
 //
@@ -33,7 +34,7 @@
 //
 // Collect profiling data.
 
-#include "config.h"
+#include <config.h>
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -55,6 +56,10 @@ const int ProfileData::kMaxStackDepth;
 const int ProfileData::kAssociativity;
 const int ProfileData::kBuckets;
 const int ProfileData::kBufferLength;
+
+ProfileData::Options::Options()
+    : frequency_(1) {
+}
 
 // This function is safe to call from asynchronous signals (but is not
 // re-entrant).  However, that's not part of its public interface.
@@ -84,7 +89,8 @@ ProfileData::ProfileData()
       start_time_(0) {
 }
 
-bool ProfileData::Start(const char* fname, int frequency) {
+bool ProfileData::Start(const char* fname,
+                        const ProfileData::Options& options) {
   if (enabled()) {
     return false;
   }
@@ -113,7 +119,9 @@ bool ProfileData::Start(const char* fname, int frequency) {
   evict_[num_evicted_++] = 0;                     // count for header
   evict_[num_evicted_++] = 3;                     // depth for header
   evict_[num_evicted_++] = 0;                     // Version number
-  evict_[num_evicted_++] = 1000000 / frequency;   // Period (microseconds)
+  CHECK_NE(0, options.frequency());
+  int period = 1000000 / options.frequency();
+  evict_[num_evicted_++] = period;                // Period (microseconds)
   evict_[num_evicted_++] = 0;                     // Padding
 
   out_ = fd;
@@ -183,13 +191,25 @@ void ProfileData::Stop() {
   // Dump "/proc/self/maps" so we get list of mapped shared libraries
   DumpProcSelfMaps(out_);
 
-  close(out_);
+  Reset();
   fprintf(stderr, "PROFILE: interrupts/evictions/bytes = %d/%d/%" PRIuS "\n",
           count_, evictions_, total_bytes_);
+}
+
+void ProfileData::Reset() {
+  if (!enabled()) {
+    return;
+  }
+
+  // Don't reset count_, evictions_, or total_bytes_ here.  They're used
+  // by Stop to print information about the profile after reset, and are
+  // cleared by Start when starting a new profile.
+  close(out_);
   delete[] hash_;
   hash_ = 0;
   delete[] evict_;
   evict_ = 0;
+  num_evicted_ = 0;
   free(fname_);
   fname_ = 0;
   start_time_ = 0;

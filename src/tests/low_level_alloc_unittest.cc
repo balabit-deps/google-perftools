@@ -1,3 +1,4 @@
+// -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
 /* Copyright (c) 2006, Google Inc.
  * All rights reserved.
  * 
@@ -26,17 +27,15 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * ---
- * Author: Mike Burrows
  */
 
 // A test for low_level_alloc.cc
 
+#include <stdio.h>
 #include <map>
 #include "base/low_level_alloc.h"
 #include "base/logging.h"
-#include <google/malloc_hook.h>
+#include <gperftools/malloc_hook.h>
 
 using std::map;
 
@@ -77,7 +76,7 @@ static bool using_low_level_alloc = false;
 // before being freed.  At the end of the run,
 // all remaining allocated blocks are freed.
 // If use_new_arena is true, use a fresh arena, and then delete it.
-// If call_malloc_hook is true and user_arena is true, 
+// If call_malloc_hook is true and user_arena is true,
 // allocations and deallocations are reported via the MallocHook
 // interface.
 static void Test(bool use_new_arena, bool call_malloc_hook, int n) {
@@ -92,6 +91,11 @@ static void Test(bool use_new_arena, bool call_malloc_hook, int n) {
     arena = LowLevelAlloc::NewArena(flags, LowLevelAlloc::DefaultArena());
   }
   for (int i = 0; i != n; i++) {
+    if (i != 0 && i % 10000 == 0) {
+      printf(".");
+      fflush(stdout);
+    }
+
     switch(rand() & 1) {      // toss a coin
     case 0:     // coin came up heads: add a block
       using_low_level_alloc = true;
@@ -143,16 +147,11 @@ static void Test(bool use_new_arena, bool call_malloc_hook, int n) {
 // used for counting allocates and frees
 static int32 allocates;
 static int32 frees;
-static MallocHook::NewHook old_alloc_hook;
-static MallocHook::DeleteHook old_free_hook;
 
 // called on each alloc if kCallMallocHook specified
 static void AllocHook(const void *p, size_t size) {
   if (using_low_level_alloc) {
     allocates++;
-  }
-  if (old_alloc_hook != 0) {
-    (*old_alloc_hook)(p, size);
   }
 }
 
@@ -160,9 +159,6 @@ static void AllocHook(const void *p, size_t size) {
 static void FreeHook(const void *p) {
   if (using_low_level_alloc) {
     frees++;
-  }
-  if (old_free_hook != 0) {
-    (*old_free_hook)(p);
   }
 }
 
@@ -174,8 +170,8 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  old_alloc_hook = MallocHook::SetNewHook(AllocHook);
-  old_free_hook = MallocHook::SetDeleteHook(FreeHook);
+  CHECK(MallocHook::AddNewHook(&AllocHook));
+  CHECK(MallocHook::AddDeleteHook(&FreeHook));
   CHECK_EQ(allocates, 0);
   CHECK_EQ(frees, 0);
   Test(false, false, 50000);
@@ -194,8 +190,8 @@ int main(int argc, char *argv[]) {
       CHECK_EQ(frees, 0);
     }
   }
-  printf("PASS\n");
-  CHECK_EQ(MallocHook::SetNewHook(old_alloc_hook), AllocHook);
-  CHECK_EQ(MallocHook::SetDeleteHook(old_free_hook), FreeHook);
+  printf("\nPASS\n");
+  CHECK(MallocHook::RemoveNewHook(&AllocHook));
+  CHECK(MallocHook::RemoveDeleteHook(&FreeHook));
   return 0;
 }

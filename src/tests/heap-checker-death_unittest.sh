@@ -44,7 +44,7 @@ if [ "x$1" = "x-h" -o "x$1" = "x--help" ]; then
   exit 1
 fi
 
-EXE="${1:-$BINDIR}/heap-checker_unittest"
+EXE="${1:-$BINDIR/heap-checker_unittest}"
 TMPDIR="/tmp/heap_check_death_info"
 
 ALARM() {
@@ -84,18 +84,18 @@ Test() {
   output="$TMPDIR/output"
   ALARM $timeout env "$@" $EXE > "$output" 2>&1
   actual_ec=$?
-  ec_ok=$(expr "$actual_ec" : "$expected_ec$" >/dev/null || echo false)
-  matches_ok=$(test -z "$expected_regexp" || \
-               grep -q "$expected_regexp" "$output" || echo false)
-  negmatches_ok=$(test -z "$unexpected_regexp" || \
-                  ! grep -q "$unexpected_regexp" "$output" || echo false)
+  ec_ok=`expr "$actual_ec" : "$expected_ec$" >/dev/null || echo false`
+  matches_ok=`test -z "$expected_regexp" || \
+              grep "$expected_regexp" "$output" >/dev/null 2>&1 || echo false`
+  negmatches_ok=`test -z "$unexpected_regexp" || \
+                 ! grep "$unexpected_regexp" "$output" >/dev/null 2>&1 || echo false`
   if $ec_ok && $matches_ok && $negmatches_ok; then
     echo "PASS"
     return 0  # 0: success
   fi
   # If we get here, we failed.  Now we just need to report why
   echo "FAIL"
-  if [ $actual_ec == 255 ]; then  # 255 == SIGTERM due to $ALARM
+  if [ $actual_ec -eq 255 ]; then  # 255 == SIGTERM due to $ALARM
     echo "Test was taking unexpectedly long time to run and so we aborted it."
     echo "Try the test case manually or raise the timeout from $timeout"
     echo "to distinguish test slowness from a real problem."
@@ -139,29 +139,34 @@ EARLY_MSG="Starting tracking the heap$"
 
 Test 60 0 "$EARLY_MSG" "" \
   HEAPCHECK="" HEAP_CHECKER_TEST_TEST_LEAK=1 HEAP_CHECKER_TEST_NO_THREADS=1 \
-  PERFTOOLS_VERBOSE=1 || exit 5
+  PERFTOOLS_VERBOSE=10 || exit 5
 Test 60 0 "MemoryRegionMap Init$" "" \
   HEAPCHECK="" HEAP_CHECKER_TEST_TEST_LEAK=1 HEAP_CHECKER_TEST_NO_THREADS=1 \
-  PERFTOOLS_VERBOSE=2 || exit 6
+  PERFTOOLS_VERBOSE=11 || exit 6
 Test 60 0 "" "$EARLY_MSG" \
   HEAPCHECK="" HEAP_CHECKER_TEST_TEST_LEAK=1 HEAP_CHECKER_TEST_NO_THREADS=1 \
-  PERFTOOLS_VERBOSE=-2 || exit 7
+  PERFTOOLS_VERBOSE=-11 || exit 7
 
 # These invocations should fail with very high probability,
 # rather than return 0 or hang (1 == exit(1), 134 == abort(), 139 = SIGSEGV):
 
-Test 20 1 "Exiting .* because of .* leaks$" "" \
+Test 60 1 "Exiting .* because of .* leaks$" "" \
   HEAP_CHECKER_TEST_TEST_LEAK=1 HEAP_CHECKER_TEST_NO_THREADS=1 || exit 8
-Test 20 1 "Exiting .* because of .* leaks$" "" \
+Test 60 1 "Exiting .* because of .* leaks$" "" \
   HEAP_CHECKER_TEST_TEST_LOOP_LEAK=1 HEAP_CHECKER_TEST_NO_THREADS=1 || exit 9
+
+# Test that we produce a reasonable textual leak report.
+Test 60 1 "MakeALeak" "" \
+          HEAP_CHECKER_TEST_TEST_LEAK=1 HEAP_CHECK_TEST_NO_THREADS=1 \
+  || exit 10
 
 # Test that very early log messages are present and controllable:
 Test 60 1 "Starting tracking the heap$" "" \
-  HEAP_CHECKER_TEST_TEST_LEAK=1 HEAP_CHECKER_TEST_NO_THREADS=1 PERFTOOLS_VERBOSE=1 \
-  || exit 9
+  HEAP_CHECKER_TEST_TEST_LEAK=1 HEAP_CHECKER_TEST_NO_THREADS=1 PERFTOOLS_VERBOSE=10 \
+  || exit 11
 Test 60 1 "" "Starting tracking the heap" \
-  HEAP_CHECKER_TEST_TEST_LEAK=1 HEAP_CHECKER_TEST_NO_THREADS=1 PERFTOOLS_VERBOSE=-1 \
-  || exit 10
+  HEAP_CHECKER_TEST_TEST_LEAK=1 HEAP_CHECKER_TEST_NO_THREADS=1 PERFTOOLS_VERBOSE=-10 \
+  || exit 12
 
 cd /    # so we're not in TMPDIR when we delete it
 rm -rf $TMPDIR

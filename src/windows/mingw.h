@@ -1,3 +1,4 @@
+/* -*- Mode: C; c-basic-offset: 2; indent-tabs-mode: nil -*- */
 /* Copyright (c) 2007, Google Inc.
  * All rights reserved.
  * 
@@ -39,6 +40,30 @@
 #define GOOGLE_PERFTOOLS_WINDOWS_MINGW_H_
 
 #ifdef __MINGW32__
+
+// Older version of the mingw msvcrt don't define _aligned_malloc
+#if __MSVCRT_VERSION__ < 0x0700
+# define PERFTOOLS_NO_ALIGNED_MALLOC 1
+#endif
+
+// This must be defined before the windows.h is included.  We need at
+// least 0x0400 for mutex.h to have access to TryLock, and at least
+// 0x0501 for patch_functions.cc to have access to GetModuleHandleEx.
+// (This latter is an optimization we could take out if need be.)
+#ifndef _WIN32_WINNT
+# define _WIN32_WINNT 0x0501
+#endif
+
+#define HAVE_SNPRINTF 1
+
+// Some mingw distributions have a pthreads wrapper, but it doesn't
+// work as well as native windows spinlocks (at least for us).  So
+// pretend the pthreads wrapper doesn't exist, even when it does.
+#ifndef HAVE_PTHREAD_DESPITE_ASKING_FOR
+#undef HAVE_PTHREAD
+#endif
+
+#define HAVE_PID_T
 
 #include "windows/port.h"
 

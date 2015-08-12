@@ -3,6 +3,9 @@ STAMPDIR=tgz2build/stamps
 STAGINGDIR=tgz2build/staging
 CONFIGURE_OPTS := --prefix $(ZBS_PREFIX)
 CONFIGURE_CMD = ./configure
+CFLAGS = -O2
+CPPFLAGS = -O2
+CXXFLAGS = -O2
 
 ifneq (,$(findstring $(ZBS_ARCH),amd64))
 CONFIGURE_OPTS+= --enable-frame-pointers

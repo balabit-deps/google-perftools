@@ -3,7 +3,7 @@
 
 <HEAD>
   <link rel="stylesheet" href="designstyle.css">
-  <title>Google Heap Profiler</title>
+  <title>Gperftools Heap Profiler</title>
 </HEAD>
 
 <BODY>
@@ -66,11 +66,14 @@ for a given run of an executable:</p>
        <pre>% env HEAPPROFILE=/tmp/mybin.hprof /usr/local/bin/my_binary_compiled_with_tcmalloc</pre>
   <li> <p>In your code, bracket the code you want profiled in calls to
        <code>HeapProfilerStart()</code> and <code>HeapProfilerStop()</code>.
-       (These functions are declared in <code>&lt;google/heap-profiler.h&gt;</code>.)
-       <code>HeapProfilerStart()</code> will take
-       the profile-filename-prefix as an argument.  You can then use
-       <code>HeapProfilerDump()</code> or
-       <code>GetHeapProfile()</code> to examine the profile.</p>
+       (These functions are declared in <code>&lt;gperftools/heap-profiler.h&gt;</code>.)
+       <code>HeapProfilerStart()</code> will take the
+       profile-filename-prefix as an argument.  Then, as often as
+       you'd like before calling <code>HeapProfilerStop()</code>, you
+       can use <code>HeapProfilerDump()</code> or
+       <code>GetHeapProfile()</code> to examine the profile.  In case
+       it's useful, <code>IsHeapProfilerRunning()</code> will tell you
+       whether you've already called HeapProfilerStart() or not.</p>
 </ol>
 
 
@@ -80,7 +83,7 @@ and is thus not usable -- for setuid programs.</p>
 <H2>Modifying Runtime Behavior</H2>
 
 <p>You can more finely control the behavior of the heap profiler via
-commandline flags.</p>
+environment variables.</p>
 
 <table frame=box rules=sides cellpadding=5 width=100%>
 
@@ -88,7 +91,7 @@ commandline flags.</p>
   <td><code>HEAP_PROFILE_ALLOCATION_INTERVAL</code></td>
   <td>default: 1073741824 (1 Gb)</td>
   <td>
-    Dump heap profiling information once every specified number of
+    Dump heap profiling information each time the specified number of
     bytes has been allocated by the program.
   </td>
 </tr>
@@ -103,18 +106,32 @@ commandline flags.</p>
 </tr>
 
 <tr valign=top>
-  <td><code>HEAP_PROFILE_MMAP</code></td>
-  <td>default: false</td>
+  <td><code>HEAP_PROFILE_TIME_INTERVAL</code></td>
+  <td>default: 104857600 (100 Mb)</td>
   <td>
-    Profile <code>mmap</code>, <code>mremap</code>, and <code>sbrk</code>
-    calls in addition to
-    <code>malloc</code>, <code>calloc</code>, <code>realloc</code>,
-    and <code>new</code>.
+    Dump heap profiling information each time the specified
+    number of seconds has elapsed.
   </td>
 </tr>
 
 <tr valign=top>
-  <td><code>HEAP_PROFILE_MMAP_ONLY</code></td>
+  <td><code>HEAP_PROFILE_MMAP</code></td>
+  <td>default: false</td>
+  <td>
+    Profile <code>mmap</code>, <code>mremap</code> and <code>sbrk</code>
+    calls in addition
+    to <code>malloc</code>, <code>calloc</code>, <code>realloc</code>,
+    and <code>new</code>.  <b>NOTE:</b> this causes the profiler to
+    profile calls internal to tcmalloc, since tcmalloc and friends use
+    mmap and sbrk internally for allocations.  One partial solution is
+    to filter these allocations out when running <code>pprof</code>,
+    with something like
+    <code>pprof --ignore='DoAllocWithArena|SbrkSysAllocator::Alloc|MmapSysAllocator::Alloc</code>.
+  </td>
+</tr>
+
+<tr valign=top>
+  <td><code>HEAP_PROFILE_ONLY_MMAP</code></td>
   <td>default: false</td>
   <td>
     Only profile <code>mmap</code>, <code>mremap</code>, and <code>sbrk</code>
@@ -326,7 +343,7 @@ interactive mode.</p>
   <li> If the program linked in a library that was not compiled
        with enough symbolic information, all samples associated
        with the library may be charged to the last symbol found
-       in the program before the libary.  This will artificially
+       in the program before the library.  This will artificially
        inflate the count for that symbol.
 
   <li> If you run the program on one machine, and profile it on
@@ -358,11 +375,8 @@ interactive mode.</p>
 </ul>
 
 <hr>
-<address>Sanjay Ghemawat<br>
+<address>Sanjay Ghemawat
 <!-- Created: Tue Dec 19 10:43:14 PST 2000 -->
-<!-- hhmts start -->
-Last modified: Sat Feb 24 14:33:15 PST 2007  (csilvers)
-<!-- hhmts end -->
 </address>
 </body>
 </html>

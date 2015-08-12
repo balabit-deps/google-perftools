@@ -1,3 +1,4 @@
+// -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
 // Copyright (c) 2004, Google Inc.
 // All rights reserved.
 // 
@@ -38,7 +39,7 @@
 #include <unistd.h>    // for sleep()
 #endif
 #include "base/logging.h"
-#include <google/malloc_extension.h>
+#include <gperftools/malloc_extension.h>
 #include "tests/testutil.h"   // for RunThread()
 
 // Size/number of objects to allocate per thread (1 MB per thread)

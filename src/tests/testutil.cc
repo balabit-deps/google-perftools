@@ -1,3 +1,4 @@
+// -*- Mode: C++; c-basic-offset: 2; indent-tabs-mode: nil -*-
 // Copyright (c) 2007, Google Inc.
 // All rights reserved.
 // 
@@ -80,7 +81,7 @@ struct FunctionAndId {
   int id;
 };
 
-#if defined(NO_THREADS) || !(defined(HAVE_PTHREADS) || defined(WIN32))
+#if defined(NO_THREADS) || !(defined(HAVE_PTHREAD) || defined(_WIN32))
 
 extern "C" void RunThread(void (*fn)()) {
   (*fn)();
@@ -97,9 +98,11 @@ extern "C" void RunManyThreadsWithId(void (*fn)(int), int count, int) {
     (*fn)(i);    // stacksize doesn't make sense in a non-threaded context
 }
 
-#elif defined(WIN32)
+#elif defined(_WIN32)
 
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN  /* We always want minimal includes */
+#endif
 #include <windows.h>
 
 extern "C" {
@@ -153,7 +156,7 @@ extern "C" {
   }
 }
 
-#else  // not NO_THREADS, not !HAVE_PTHREAD, not WIN32
+#else  // not NO_THREADS, not !HAVE_PTHREAD, not _WIN32
 
 #include <pthread.h>
 
