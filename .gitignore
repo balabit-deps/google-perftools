@@ -39,6 +39,8 @@ ltmain.sh
 sbuild/build
 sbuild/*.pyc
 sbuild.py*
+sbuild/*
+!sbuild/config.yml
 test-driver
 
 #m4
